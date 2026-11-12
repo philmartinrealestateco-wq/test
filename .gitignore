@@ -1,7 +1,11 @@
+# Environment and caches
 .venv/
 __pycache__/
 *.pyc
+.pytest_cache/
 .env
 cache/
+
+# Generated analysis output: dashboards, timestamped CSV/XLSX, live report.csv.
+# Committed snapshots live in reports/ instead.
 out/
-.pytest_cache/
