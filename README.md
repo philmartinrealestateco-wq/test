@@ -329,6 +329,8 @@ python -m wallet_analyzer providers
 python -m wallet_analyzer doctor [--json]
 python -m wallet_analyzer discover --token 0x... [--chain bsc|ethereum] [--csv PATH] [--out PATH]
 python -m wallet_analyzer validate --network ethereum --address 0x...
+
+scan_target.bat <token> [chain] [limit] [csv-fallback]   # discover + analyze --filter
 ```
 
 ### Bulk mode (`--file`)
@@ -418,9 +420,37 @@ next    : python -m wallet_analyzer analyze --file out\holders_usdt.txt
 * With no `--csv` and an unavailable API, the command exits `2` and repeats the
   provider's reason plus the hint to pass `--csv`.
 
+### One-shot scan (`scan_target.bat`)
+
+Chains discovery into analysis so one command covers the whole pipeline:
+
+```bat
+scan_target.bat 0x55d398326f99059fF775485246999027B3197955
+scan_target.bat 0x55d398326f99059fF775485246999027B3197955 bsc 1000 data\dune_holders_sample.csv
+```
+
+1. `discover --token <token> --chain <chain> --limit <limit> --out <out>\holders_<token>.txt`
+2. `analyze --file <that file> --filter`
+
+| Argument | Default | Meaning |
+|---|---|---|
+| `token` | required | ERC-20/BEP-20 contract address |
+| `chain` | `bsc` | `bsc` or `ethereum`, used for discovery |
+| `limit` | `1000` | holders requested |
+| `csv-fallback` | none | local export used when the API is unavailable |
+
+Outputs: `out\holders_<token>.txt` (the `--file` input), `out\report.csv` (all
+rows) and `out\report_matches.csv` (rows inside the target range).
+
+On a free Etherscan plan step 1 fails because `tokenholderlist` is Pro-only, and
+the script **stops before analysing** rather than scanning an empty list — pass
+the CSV export as the fourth argument. Because the analysis step auto-detects
+networks, each `0x` holder is evaluated on both Ethereum and BNB Smart Chain.
+
 Exit codes: `0` success, `1` invalid address (`validate`) or a required service
 down (`doctor`), `2` configuration or input error, `3` no price feed, `130`
-interrupted.
+interrupted. `scan_target.bat` exits `2` when discovery fails and `3` when the
+analysis step fails.
 
 ---
 
