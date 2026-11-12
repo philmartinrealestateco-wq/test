@@ -7,5 +7,7 @@ __pycache__/
 cache/
 
 # Generated analysis output: dashboards, timestamped CSV/XLSX, live report.csv.
-# Committed snapshots live in reports/ instead.
-out/
+# Committed snapshots live in reports/ instead. The empty directory is kept in
+# the repo through .gitkeep, hence the exception below.
+out/*
+!out/.gitkeep
