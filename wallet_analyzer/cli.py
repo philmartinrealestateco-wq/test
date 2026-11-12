@@ -404,7 +404,9 @@ def cmd_discover(args: argparse.Namespace) -> int:
             )
 
     try:
-        addresses, source = discover_holders(api_fetch, csv_path=args.csv)
+        addresses, source = discover_holders(
+            api_fetch, csv_path=args.csv, limit=args.limit
+        )
     except DiscoveryError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

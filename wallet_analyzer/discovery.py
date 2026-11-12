@@ -132,24 +132,39 @@ def fetch_token_holders(
     return addresses
 
 
-def read_holders_csv(path: Path) -> list[str]:
-    """Read wallet addresses from the first column of a CSV export."""
+def read_holders_csv(path: Path, *, limit: int | None = None) -> list[str]:
+    """Read wallet addresses from the first column of a CSV export.
+
+    ``limit`` caps the number of unique addresses returned, so ``--limit`` means
+    the same thing for an export as it does for the Etherscan request. Rows are
+    streamed, so a large export is not parsed past the cap.
+    """
+
+    if limit is not None and limit < 1:
+        raise DiscoveryError("limit must be at least 1")
 
     if not path.exists():
         raise DiscoveryError(f"CSV file not found: {path}")
     if path.is_dir():
         raise DiscoveryError(f"CSV path is a directory: {path}")
 
-    values: list[str] = []
+    addresses: list[str] = []
+    seen: set[str] = set()
     try:
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
             for row in csv.reader(handle):
-                if row:
-                    values.append(row[0])
+                if limit is not None and len(addresses) >= limit:
+                    break
+                if not row:
+                    continue
+                normalized = normalize_address(row[0])
+                if normalized is None or normalized.lower() in seen:
+                    continue
+                seen.add(normalized.lower())
+                addresses.append(normalized)
     except OSError as exc:
         raise DiscoveryError(f"could not read {path.name}: {exc}") from exc
 
-    addresses = extract_addresses(values)
     if not addresses:
         raise DiscoveryError(
             f"{path.name} has no wallet addresses in its first column"
@@ -161,6 +176,7 @@ def discover_holders(
     api_fetch: Callable[[], list[str]],
     *,
     csv_path: Path | None = None,
+    limit: int | None = None,
 ) -> tuple[list[str], str]:
     """Try the API, then the CSV. Returns ``(addresses, source_label)``."""
 
@@ -173,7 +189,7 @@ def discover_holders(
             raise DiscoveryError(
                 f"token holder API unavailable ({reason}); pass --csv with a local export"
             ) from exc
-        return read_holders_csv(csv_path), f"CSV fallback ({csv_path.name})"
+        return read_holders_csv(csv_path, limit=limit), f"CSV fallback ({csv_path.name})"
 
     return addresses, "Etherscan V2 tokenholderlist"
 

@@ -182,6 +182,61 @@ def test_csv_without_addresses_raises(tmp_path: Path) -> None:
         read_holders_csv(path)
 
 
+THIRD = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
+
+
+def test_csv_without_limit_returns_every_unique_address(tmp_path: Path) -> None:
+    path = write_csv(
+        tmp_path, f"address\n{HOLDER_A}\n{HOLDER_B_LOWER}\n{THIRD}\n"
+    )
+
+    assert len(read_holders_csv(path)) == 3
+
+
+def test_csv_limit_stops_after_n_unique_addresses(tmp_path: Path) -> None:
+    path = write_csv(
+        tmp_path, f"address\n{HOLDER_A}\n{HOLDER_B_LOWER}\n{THIRD}\n"
+    )
+
+    holders = read_holders_csv(path, limit=2)
+
+    assert holders == [HOLDER_A, normalize_address(HOLDER_B_LOWER)]
+
+
+def test_csv_limit_ignores_header_duplicates_and_junk(tmp_path: Path) -> None:
+    path = write_csv(
+        tmp_path,
+        "\n".join(
+            [
+                "address,balance",
+                "",
+                "# exported",
+                f"{HOLDER_A},1",
+                f"{HOLDER_A.lower()},1",
+                f"{HOLDER_B_LOWER},2",
+                f"{THIRD},3",
+            ]
+        ),
+    )
+
+    holders = read_holders_csv(path, limit=2)
+
+    assert holders == [HOLDER_A, normalize_address(HOLDER_B_LOWER)]
+
+
+def test_csv_limit_above_available_returns_what_exists(tmp_path: Path) -> None:
+    path = write_csv(tmp_path, f"address\n{HOLDER_A}\n")
+
+    assert read_holders_csv(path, limit=500) == [HOLDER_A]
+
+
+def test_csv_limit_below_one_is_rejected(tmp_path: Path) -> None:
+    path = write_csv(tmp_path, f"address\n{HOLDER_A}\n")
+
+    with pytest.raises(DiscoveryError, match="at least 1"):
+        read_holders_csv(path, limit=0)
+
+
 def test_missing_csv_raises(tmp_path: Path) -> None:
     with pytest.raises(DiscoveryError, match="not found"):
         read_holders_csv(tmp_path / "nope.csv")
@@ -207,6 +262,18 @@ def test_api_failure_falls_back_to_csv(tmp_path: Path) -> None:
 
     assert addresses == [HOLDER_A]
     assert source == f"CSV fallback ({path.name})"
+
+
+def test_fallback_applies_the_limit_to_the_csv(tmp_path: Path) -> None:
+    path = write_csv(tmp_path, f"address\n{HOLDER_A}\n{HOLDER_B_LOWER}\n{THIRD}\n")
+
+    def failing() -> list[str]:
+        raise ProviderError("API Pro endpoint")
+
+    addresses, source = discover_holders(failing, csv_path=path, limit=1)
+
+    assert addresses == [HOLDER_A]
+    assert source.startswith("CSV fallback")
 
 
 def test_api_failure_without_csv_explains_the_plan_limit() -> None:

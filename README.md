@@ -414,7 +414,8 @@ next    : python -m wallet_analyzer analyze --file out\holders_usdt.txt
 ```
 
 * `--chain` selects `bsc` (chainid 56, default) or `ethereum` (1).
-* `--limit` requests N holders (default 100, maximum 1000).
+* `--limit` keeps at most N holders from either source — API offset or CSV rows
+  (default 100, maximum 1000).
 * `--out` defaults to `<out>/holders_<contract>.txt`; the file is one address per
   line with no header, so it is valid `--file` input as-is.
 * With no `--csv` and an unavailable API, the command exits `2` and repeats the
@@ -436,7 +437,7 @@ scan_target.bat 0x55d398326f99059fF775485246999027B3197955 bsc 1000 data\dune_ho
 |---|---|---|
 | `token` | required | ERC-20/BEP-20 contract address |
 | `chain` | `bsc` | `bsc` or `ethereum`, used for discovery |
-| `limit` | `1000` | holders requested |
+| `limit` | `1000` | holders kept — CSV rows or API offset |
 | `csv-fallback` | none | local export used when the API is unavailable |
 
 Outputs: `out\holders_<token>.txt` (the `--file` input), `out\report.csv` (all
