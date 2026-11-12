@@ -307,6 +307,7 @@ Design notes:
 
 ```
 python -m wallet_analyzer analyze [options]
+    --file PATH             TXT, one address per line: bulk mode (see below)
     --input PATH            CSV/TSV/TXT file
     --address ADDR          repeatable; accepts network:address
     --network NAME          force a network for --address values
@@ -327,6 +328,43 @@ python -m wallet_analyzer doctor [--json]
 python -m wallet_analyzer validate --network ethereum --address 0x...
 ```
 
+### Bulk mode (`--file`)
+
+```bat
+python -m wallet_analyzer analyze --file data\wallets.sample.txt
+```
+
+Reads a `.txt` with one address per line (blank lines and `#` comments are
+ignored) and processes each wallet independently:
+
+```
+bulk mode: 3 wallet(s) from wallets.sample.txt
+report: C:\...\out\report.csv (appending)
+
+[1/3] Processing bc1qw508d6..7kv8f3t4
+[2/3] Processing 0xd8dA6BF2..7aA96045
+[3/3] Processing 9WzDXwBbmk..9zYtAWWM
+
+bulk complete: 4 row(s) across 3 wallet(s)
+```
+
+Results are appended to `<out>/report.csv`:
+
+| Wallet | Network | Native USD | Token USD | Total USD | Status |
+|---|---|---|---|---|---|
+
+* One row per wallet/network pair. A bare `0x` address is analysed on Ethereum
+  and BNB Smart Chain, so it yields two rows unless `--network` narrows it — the
+  `Network` column keeps them distinguishable.
+* The header is written only once, when the file is new; existing rows are never
+  rewritten, so an interrupted batch keeps its completed work.
+* Token prices come from the shared process cache, so each contract is priced at
+  most once per batch even if the TTL would expire mid-run.
+* A wallet that fails outright is logged and recorded with `Status = ERROR` and
+  blank USD cells; the batch continues with the next one.
+* `--file` and `--input` are mutually exclusive: `--input` runs a single batch and
+  writes the full timestamped reports, `--file` streams rows incrementally.
+
 Exit codes: `0` success, `1` invalid address (`validate`) or a required service
 down (`doctor`), `2` configuration or input error, `3` no price feed, `130`
 interrupted.
@@ -339,16 +377,18 @@ interrupted.
 .venv\Scripts\python.exe -m pytest
 ```
 
-177 tests, no network access required. Covered: Keccak-256/EIP-55 published
+194 tests, no network access required. Covered: Keccak-256/EIP-55 published
 vectors, base58check, bech32/bech32m, address validation, input parsing,
 provider payload handling for all four chains, analyzer filtering and failure
 semantics, CSV/XLSX contents, price fallback and caching, dashboard escaping,
 credential resolution and secret scrubbing, the `doctor` status rules, the
 BEP-20 layer (selectors, ABI string/bytes32 symbol decoding, decimals bounds,
 batched scans with single-call fallback, metadata caching, per-wallet token
-valuation, PARTIAL downgrade), and transport retry behaviour: 429 backoff,
-persistent-429 exhaustion, default no-retry on 400, opt-in 400 retries, and
-per-contract price isolation.
+valuation, PARTIAL downgrade), transport retry behaviour (429 backoff,
+persistent-429 exhaustion, default no-retry on 400, opt-in 400 retries,
+per-contract price isolation), batch-wide price caching, and bulk mode (file
+parsing, address grouping, CSV header-once appending, and continuing past a
+failed wallet).
 
 The suite is the reason a real bug was caught early: the base58check verifier
 initially hashed the checksum together with the payload, which rejected every

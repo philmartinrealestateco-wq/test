@@ -251,3 +251,37 @@ def test_all_contracts_failing_still_returns_a_snapshot() -> None:
     assert snapshot.prices == {}
     assert snapshot.missing == {USDT, CAKE}
     assert snapshot.source == "unavailable"
+
+
+# -- batch-wide caching --------------------------------------------------
+
+
+def test_token_price_is_fetched_once_per_process() -> None:
+    client = FakeClient(token_handler({USDT: {"usd": "1.0"}}))
+    service = PriceService(client)  # no disk cache at all
+
+    first = service.get_token_prices([USDT])
+    second = service.get_token_prices([USDT])
+
+    assert len(client.calls) == 1
+    assert second.prices == first.prices
+
+
+def test_token_price_memory_cache_outlives_the_ttl() -> None:
+    client = FakeClient(token_handler({USDT: {"usd": "1.0"}}))
+    service = PriceService(client, ttl_seconds=0)  # disk entries never count as fresh
+
+    service.get_token_prices([USDT])
+    service.get_token_prices([USDT])
+
+    assert len(client.calls) == 1
+
+
+def test_force_refresh_clears_the_process_cache() -> None:
+    client = FakeClient(token_handler({USDT: {"usd": "1.0"}}))
+    service = PriceService(client)
+
+    service.get_token_prices([USDT])
+    service.get_token_prices([USDT], force_refresh=True)
+
+    assert len(client.calls) == 2

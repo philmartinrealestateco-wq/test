@@ -89,6 +89,9 @@ class PriceService:
         self._ttl = timedelta(seconds=ttl_seconds)
         self._cache_path = cache_path
         self._token_cache_path = token_cache_path
+        # Process-lifetime cache: a batch must not re-price a token just because
+        # its TTL elapsed halfway through the run.
+        self._token_memory: dict[str, tuple[Decimal, datetime]] = {}
 
     def get(self, *, force_refresh: bool = False) -> PriceSnapshot:
         cached = None if force_refresh else self._read_cache()
@@ -197,13 +200,27 @@ class PriceService:
         if not wanted:
             return TokenPriceSnapshot({}, "not requested", None, set())
 
+        if force_refresh:
+            self._token_memory.clear()
+
         now = datetime.now(timezone.utc)
-        cached = {} if force_refresh else self._read_token_cache()
         prices: dict[str, Decimal] = {}
+
+        # 1. Anything already priced in this process is final for the batch.
         for contract in wanted:
+            remembered = self._token_memory.get(contract)
+            if remembered is not None:
+                prices[contract] = remembered[0]
+
+        # 2. Fall back to the on-disk cache, which does respect the TTL.
+        cached = self._read_disk_token_cache() if len(prices) < len(wanted) else {}
+        for contract in wanted:
+            if contract in prices:
+                continue
             entry = cached.get(contract)
             if entry is not None and now - entry[1] <= self._ttl:
                 prices[contract] = entry[0]
+                self._token_memory[contract] = entry
 
         source = "cache" if prices else ""
         missing = [contract for contract in wanted if contract not in prices]
@@ -269,7 +286,7 @@ class PriceService:
 
         return prices, failed
 
-    def _read_token_cache(self) -> dict[str, tuple[Decimal, datetime]]:
+    def _read_disk_token_cache(self) -> dict[str, tuple[Decimal, datetime]]:
         if self._token_cache_path is None or not self._token_cache_path.exists():
             return {}
         try:
@@ -291,19 +308,21 @@ class PriceService:
         return entries
 
     def _write_token_cache(self, prices: dict[str, Decimal]) -> None:
+        stamp = datetime.now(timezone.utc)
+        for contract, price in prices.items():
+            self._token_memory[contract] = (price, stamp)
+
         if self._token_cache_path is None:
             return
-        existing = self._read_token_cache()
-        stamp = datetime.now(timezone.utc).isoformat()
-        for contract, price in prices.items():
-            existing[contract] = (price, datetime.now(timezone.utc))
+        existing = self._read_disk_token_cache()
+        existing.update(self._token_memory)
         try:
             self._token_cache_path.parent.mkdir(parents=True, exist_ok=True)
             self._token_cache_path.write_text(
                 json.dumps(
                     {
-                        contract: {"usd": str(price), "fetched_at": stamp}
-                        for contract, (price, _) in existing.items()
+                        contract: {"usd": str(price), "fetched_at": fetched_at.isoformat()}
+                        for contract, (price, fetched_at) in existing.items()
                     },
                     indent=2,
                 ),

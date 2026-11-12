@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .analyzer import WalletAnalyzer
 from .bep20 import Bep20Provider
+from .bulk import ERROR_STATUS, group_by_address, run_bulk
 from .config import ConfigError, Settings
 from .dashboard import write_dashboard
 from .health import exit_code, format_summary, format_table, run_checks
@@ -46,7 +47,16 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     analyze = subparsers.add_parser("analyze", help="analyse addresses and write reports")
-    analyze.add_argument("--input", type=Path, help="CSV/TSV/TXT file of addresses")
+    sources = analyze.add_mutually_exclusive_group()
+    sources.add_argument("--input", type=Path, help="CSV/TSV/TXT file of addresses (single batch)")
+    sources.add_argument(
+        "--file",
+        type=Path,
+        help=(
+            "TXT with one address per line: bulk mode, prints progress and appends "
+            "to <out>/report.csv so completed wallets survive a crash"
+        ),
+    )
     analyze.add_argument(
         "--address",
         action="append",
@@ -142,7 +152,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 
     entries = _collect_entries(args)
     if not entries:
-        print("error: no addresses supplied; use --input or --address", file=sys.stderr)
+        print("error: no addresses supplied; use --file, --input or --address", file=sys.stderr)
         return 2
 
     analysis_settings = AnalysisSettings(
@@ -169,10 +179,27 @@ def cmd_analyze(args: argparse.Namespace) -> int:
             bep20=bep20,
         )
 
+        snapshot = price_service.get(force_refresh=args.force_prices)
+
+        if args.file:
+            report_path = settings.output_dir / "report.csv"
+            groups = group_by_address(entries)
+            print(f"bulk mode: {len(groups)} wallet(s) from {args.file.name}")
+            print(f"report: {report_path} (appending)")
+            print()
+            rows = run_bulk(
+                groups,
+                analyzer,
+                snapshot,
+                report_path,
+                progress=None if args.quiet else _bulk_progress,
+            )
+            _print_bulk_summary(rows, report_path)
+            return 0
+
         if not args.quiet:
             _print_plan(entries, modes, analysis_settings, bep20)
 
-        snapshot = price_service.get(force_refresh=args.force_prices)
         result = analyzer.analyze(
             entries,
             prices=snapshot,
@@ -300,8 +327,9 @@ def cmd_validate(args: argparse.Namespace) -> int:
 def _collect_entries(args: argparse.Namespace) -> list[AddressEntry]:
     entries: list[AddressEntry] = []
 
-    if args.input:
-        parsed = load_file(args.input)
+    source = getattr(args, "file", None) or args.input
+    if source:
+        parsed = load_file(source)
         for warning in parsed.warnings:
             print(f"warning: {warning}", file=sys.stderr)
         entries.extend(parsed.entries)
@@ -356,6 +384,20 @@ def _print_plan(
             "(unlisted tokens are not detected)"
         )
     print()
+
+
+def _bulk_progress(index: int, total: int, address: str) -> None:
+    print(f"[{index}/{total}] Processing {_short(address)}", flush=True)
+
+
+def _print_bulk_summary(rows, report_path: Path) -> None:
+    failures = sum(1 for row in rows if row.status == ERROR_STATUS)
+    wallets = len({row.wallet for row in rows})
+    print()
+    print(f"bulk complete: {len(rows)} row(s) across {wallets} wallet(s)")
+    if failures:
+        print(f"  failures: {failures} (ERROR rows kept in the report)")
+    print(f"  report  : {report_path}")
 
 
 def _progress_printer():
