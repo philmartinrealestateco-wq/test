@@ -1,0 +1,6 @@
+address,network,label
+bc1qgdjqv0av3q56jvd82tkdjpy7gdp9ut8tlqmgrpmv24sq90ecnvqqjwvw97,bitcoin,public address used in API docs
+0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045,,vitalik.eth - leave network blank to check ETH and BSC
+9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM,solana,large public Solana account
+1FeexV6bAHb8ybZjqQMjJrcCrHGW9sb6uF,bitcoin,historic burn address
+0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAeD,ethereum,deliberately broken checksum - should be rejected
