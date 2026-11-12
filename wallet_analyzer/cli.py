@@ -35,7 +35,7 @@ from .inputs import InputError, from_argument, load_file, resolve
 from .models import AddressEntry, AnalysisSettings, Network, VerificationStatus
 from .net import HttpClient
 from .prices import PriceError, PriceService
-from .providers import build_providers, describe_modes
+from .providers import build_providers, describe_modes, log_provider_summaries
 from .report import format_usd, write_reports
 from .tokens import (
     DEFAULT_BEP20_TOKENS,
@@ -226,49 +226,52 @@ def cmd_analyze(args: argparse.Namespace) -> int:
             bep20=bep20,
         )
 
-        snapshot = price_service.get(force_refresh=args.force_prices)
+        try:
+            snapshot = price_service.get(force_refresh=args.force_prices)
 
-        if args.file:
-            report_path = settings.output_dir / "report.csv"
-            matches_path = (
-                settings.output_dir / "report_matches.csv" if args.filter else None
-            )
-            groups = group_by_address(entries)
-            print(f"bulk mode: {len(groups)} wallet(s) from {args.file.name}")
-            print(f"report: {report_path} (appending)")
-            if matches_path is not None:
-                print(f"matches: {matches_path} (appending)")
-            print()
-            rows = run_bulk(
-                groups,
-                analyzer,
-                snapshot,
-                report_path,
-                progress=None if args.quiet else _bulk_progress,
-            )
-            matches = target_matches(rows, settings.min_usd, settings.max_usd)
-            if matches_path is not None:
-                append_rows(matches_path, matches)
-            _print_bulk_summary(rows, report_path, matches_path)
-            print()
-            print(
-                format_target_matches(
-                    matches,
-                    settings.min_usd,
-                    settings.max_usd,
-                    matches_path=matches_path,
+            if args.file:
+                report_path = settings.output_dir / "report.csv"
+                matches_path = (
+                    settings.output_dir / "report_matches.csv" if args.filter else None
                 )
+                groups = group_by_address(entries)
+                print(f"bulk mode: {len(groups)} wallet(s) from {args.file.name}")
+                print(f"report: {report_path} (appending)")
+                if matches_path is not None:
+                    print(f"matches: {matches_path} (appending)")
+                print()
+                rows = run_bulk(
+                    groups,
+                    analyzer,
+                    snapshot,
+                    report_path,
+                    progress=None if args.quiet else _bulk_progress,
+                )
+                matches = target_matches(rows, settings.min_usd, settings.max_usd)
+                if matches_path is not None:
+                    append_rows(matches_path, matches)
+                _print_bulk_summary(rows, report_path, matches_path)
+                print()
+                print(
+                    format_target_matches(
+                        matches,
+                        settings.min_usd,
+                        settings.max_usd,
+                        matches_path=matches_path,
+                    )
+                )
+                return 0
+
+            if not args.quiet:
+                _print_plan(entries, modes, analysis_settings, bep20)
+
+            result = analyzer.analyze(
+                entries,
+                prices=snapshot,
+                progress=None if args.quiet else _progress_printer(),
             )
-            return 0
-
-        if not args.quiet:
-            _print_plan(entries, modes, analysis_settings, bep20)
-
-        result = analyzer.analyze(
-            entries,
-            prices=snapshot,
-            progress=None if args.quiet else _progress_printer(),
-        )
+        finally:
+            log_provider_summaries(providers)
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     paths = write_reports(result, settings.output_dir, timestamp=result.finished_at)

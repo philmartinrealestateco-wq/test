@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlparse
@@ -221,6 +222,9 @@ class BscProvider:
                 )
             )
         self._activity = activity_provider
+        self._activity_error: str | None = None
+        self._activity_skipped = 0
+        self._breaker_lock = threading.Lock()
 
     def _read_balance(self, address: str) -> tuple[Decimal, str]:
         """Return ``(balance, endpoint label)`` from the first healthy node."""
@@ -242,6 +246,50 @@ class BscProvider:
             "no BSC RPC endpoint answered: " + ("; ".join(failures) or "none configured")
         )
 
+    def _check_activity(self, address: str) -> tuple[datetime | None, bool, str]:
+        """Look up activity once per run, tripping a breaker on the first failure.
+
+        BSC history is a paid Etherscan feature, so an unentitled key fails
+        deterministically for every wallet. After one terminal failure the check
+        is skipped for the rest of the batch instead of repeating the same
+        warning and request hundreds of times.
+        """
+
+        with self._breaker_lock:
+            reason = self._activity_error
+            if reason is not None:
+                self._activity_skipped += 1
+
+        if reason is not None:
+            return None, False, (
+                "activity not checked: the BSC history API failed earlier in this batch"
+            )
+
+        try:
+            last_tx_at, note = self._activity.fetch_activity(address)
+        except ProviderError as exc:
+            with self._breaker_lock:
+                if self._activity_error is None:
+                    self._activity_error = str(exc)
+            return None, False, f"activity lookup failed: {exc}"
+
+        return last_tx_at, True, note
+
+    def log_activity_summary(self) -> None:
+        """Emit at most one warning per batch when the breaker tripped."""
+
+        with self._breaker_lock:
+            reason = self._activity_error
+            skipped = self._activity_skipped
+        if reason is None:
+            return
+        LOG.warning(
+            "BSC history API unavailable (%s); skipped the activity check for %d "
+            "later wallet(s) in this batch",
+            reason,
+            skipped,
+        )
+
     def fetch(self, address: str) -> ProviderResult:
         balance, endpoint = self._read_balance(address)
 
@@ -258,15 +306,11 @@ class BscProvider:
                 "coverage; native balance verified via public RPC"
             )
         else:
-            try:
-                last_tx_at, note = self._activity.fetch_activity(address)
-                activity_verified = True
+            last_tx_at, activity_verified, note = self._check_activity(address)
+            if activity_verified:
                 activity_source = self._activity.activity_source
-                if note:
-                    notes.append(note)
-            except ProviderError as exc:
-                LOG.warning("BSC activity lookup failed: %s", exc)
-                notes.append(f"activity lookup failed: {exc}")
+            if note:
+                notes.append(note)
 
         return ProviderResult(
             balance=balance,

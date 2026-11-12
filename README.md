@@ -330,7 +330,7 @@ python -m wallet_analyzer doctor [--json]
 python -m wallet_analyzer discover --token 0x... [--chain bsc|ethereum] [--csv PATH] [--out PATH]
 python -m wallet_analyzer validate --network ethereum --address 0x...
 
-scan_target.bat <token> [chain] [limit] [csv-fallback]   # discover + analyze --filter
+scan_target.bat <token> [chain] [limit] [csv-fallback] [--quiet]   # discover + analyze --filter
 ```
 
 ### Bulk mode (`--file`)
@@ -428,6 +428,7 @@ Chains discovery into analysis so one command covers the whole pipeline:
 ```bat
 scan_target.bat 0x55d398326f99059fF775485246999027B3197955
 scan_target.bat 0x55d398326f99059fF775485246999027B3197955 bsc 1000 data\dune_holders_sample.csv
+scan_target.bat 0x55d398326f99059fF775485246999027B3197955 bsc 500 data\dune_holders_sample.csv --quiet
 ```
 
 1. `discover --token <token> --chain <chain> --limit <limit> --out <out>\holders_<token>.txt`
@@ -439,6 +440,11 @@ scan_target.bat 0x55d398326f99059fF775485246999027B3197955 bsc 1000 data\dune_ho
 | `chain` | `bsc` | `bsc` or `ethereum`, used for discovery |
 | `limit` | `1000` | holders kept — CSV rows or API offset |
 | `csv-fallback` | none | local export used when the API is unavailable |
+| `--quiet` | off | suppress per-wallet progress; may appear anywhere after the token |
+
+`--quiet` is forwarded to `analyze`, so the batch header, final summary and
+Target Matches list still print — only the per-wallet progress lines go away.
+On a 500-wallet run that removes roughly 500 lines.
 
 Outputs: `out\holders_<token>.txt` (the `--file` input), `out\report.csv` (all
 rows) and `out\report_matches.csv` (rows inside the target range).
@@ -491,7 +497,9 @@ Be aware of these before trusting a number:
    balance is verified through public RPC (with automatic failover across the
    public dataseeds) and BEP-20 balances are read from the allowlist, but
    transaction history is unavailable, so activity stays `UNKNOWN` and the
-   wallet is `PARTIAL`. This is a provider limitation, not a bug.
+   wallet is `PARTIAL`. This is a provider limitation, not a bug. The first
+   failed history call in a run trips a breaker: later BSC wallets skip the
+   lookup entirely and one summary warning reports how many were skipped.
 2. **Token coverage is an allowlist, never a discovery.** Only the contracts in
    the configured list are read. A wallet whose value sits in an unlisted token
    looks smaller than it is; the report says so in `Notes` and the dashboard

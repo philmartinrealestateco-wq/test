@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -263,6 +264,65 @@ def test_bsc_degrades_when_activity_provider_fails() -> None:
     assert result.balance_verified
     assert not result.activity_verified
     assert "activity lookup failed" in " ".join(result.notes)
+
+
+def test_bsc_activity_breaker_skips_later_wallets(caplog) -> None:
+    rpc = FakeClient(post_handler=lambda payload: {"jsonrpc": "2.0", "id": 1, "result": "0xde0b6b3a7640000"})
+    history_calls: list[dict] = []
+
+    def failing_history(url, params):
+        history_calls.append(params)
+        return {
+            "status": "0",
+            "message": "NOTOK",
+            "result": "Free API access is not supported for this chain.",
+        }
+
+    provider = BscProvider(
+        rpc,
+        "https://bsc-dataseed.binance.org",
+        EtherscanV2Provider(
+            FakeClient(get_handler=failing_history),
+            network=Network.BSC,
+            chain_id=56,
+            api_key="TESTKEY123456",
+        ),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        first = provider.fetch(EVM)
+        second = provider.fetch("0x" + "1" * 40)
+        provider.log_activity_summary()
+
+    assert len(history_calls) == 1
+    assert not first.activity_verified
+    assert not second.activity_verified
+    assert "activity lookup failed" in " ".join(first.notes)
+    assert "not checked" in " ".join(second.notes)
+
+    warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "skipped the activity check for 1 later wallet" in warnings[0].getMessage()
+
+
+def test_bsc_activity_summary_is_silent_without_failures(caplog) -> None:
+    rpc = FakeClient(post_handler=lambda payload: {"jsonrpc": "2.0", "id": 1, "result": "0xde0b6b3a7640000"})
+    provider = BscProvider(
+        rpc,
+        "https://bsc-dataseed.binance.org",
+        EtherscanV2Provider(
+            FakeClient(get_handler=_etherscan_handler()),
+            network=Network.BSC,
+            chain_id=56,
+            api_key="TESTKEY123456",
+        ),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        provider.fetch(EVM)
+        provider.log_activity_summary()
+
+    assert not [record for record in caplog.records if record.levelno == logging.WARNING]
 
 
 # -- Solana --------------------------------------------------------------

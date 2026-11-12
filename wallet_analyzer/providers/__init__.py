@@ -56,6 +56,14 @@ def build_providers(settings: Settings, client: HttpClient) -> dict[Network, Pro
     return providers
 
 
+def log_provider_summaries(providers: dict[Network, Provider]) -> None:
+    """Flush one-per-batch provider warnings (currently the BSC breaker)."""
+
+    for provider in providers.values():
+        if isinstance(provider, BscProvider):
+            provider.log_activity_summary()
+
+
 def describe_modes(providers: dict[Network, Provider]) -> dict[Network, str]:
     descriptions: dict[Network, str] = {}
     for network, provider in providers.items():

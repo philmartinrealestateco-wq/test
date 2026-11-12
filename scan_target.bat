@@ -1,11 +1,48 @@
 @echo off
 setlocal EnableExtensions
 
-set "TOKEN=%~1"
-set "CHAIN=%~2"
-set "LIMIT=%~3"
-set "CSV=%~4"
+set "TOKEN="
+set "CHAIN="
+set "LIMIT="
+set "CSV="
+set "QUIET="
 
+:parse
+if "%~1"=="" goto parsed
+if /i "%~1"=="--quiet" (
+  set "QUIET=--quiet"
+  shift
+  goto parse
+)
+if /i "%~1"=="/quiet" (
+  set "QUIET=--quiet"
+  shift
+  goto parse
+)
+if not defined TOKEN (
+  set "TOKEN=%~1"
+  shift
+  goto parse
+)
+if not defined CHAIN (
+  set "CHAIN=%~1"
+  shift
+  goto parse
+)
+if not defined LIMIT (
+  set "LIMIT=%~1"
+  shift
+  goto parse
+)
+if not defined CSV (
+  set "CSV=%~1"
+  shift
+  goto parse
+)
+echo scan_target: unexpected argument "%~1"
+goto usage
+
+:parsed
 if "%TOKEN%"=="" goto usage
 if "%CHAIN%"=="" set "CHAIN=bsc"
 if "%LIMIT%"=="" set "LIMIT=1000"
@@ -33,7 +70,7 @@ if not exist "%HOLDERS%" (
 
 echo.
 echo [2/2] analysing %HOLDERS% with the target filter
-call "%ROOT%\run.cmd" analyze --file "%HOLDERS%" --filter
+call "%ROOT%\run.cmd" analyze --file "%HOLDERS%" --filter %QUIET%
 if errorlevel 1 (
   echo.
   echo scan_target: analysis failed.
@@ -48,13 +85,16 @@ echo   matches : %ROOT%\out\report_matches.csv
 exit /b 0
 
 :usage
-echo usage: scan_target.bat ^<token-contract^> [chain] [limit] [csv-fallback]
+echo usage: scan_target.bat ^<token-contract^> [chain] [limit] [csv-fallback] [--quiet]
 echo   chain    bsc ^(default^) or ethereum
 echo   limit    holders to request, default 1000
 echo   csv      local holder export, used when the Etherscan API is unavailable
 echo            ^(tokenholderlist is a Pro endpoint^)
+echo   --quiet  suppress per-wallet progress lines in large batches
+echo            may appear anywhere after the token
 echo.
 echo examples:
 echo   scan_target.bat 0x55d398326f99059fF775485246999027B3197955
 echo   scan_target.bat 0x55d398326f99059fF775485246999027B3197955 bsc 1000 data\dune_holders_sample.csv
+echo   scan_target.bat 0x55d398326f99059fF775485246999027B3197955 bsc 500 data\dune_holders_sample.csv --quiet
 exit /b 2
