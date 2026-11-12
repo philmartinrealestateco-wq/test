@@ -22,6 +22,14 @@ from .bulk import (
 )
 from .config import ConfigError, Settings
 from .dashboard import write_dashboard
+from .discovery import (
+    CHAIN_IDS,
+    DiscoveryError,
+    discover_holders,
+    fetch_token_holders,
+    normalize_address,
+    write_holders,
+)
 from .health import exit_code, format_summary, format_table, run_checks
 from .inputs import InputError, from_argument, load_file, resolve
 from .models import AddressEntry, AnalysisSettings, Network, VerificationStatus
@@ -122,6 +130,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doctor.add_argument("--json", action="store_true", help="machine-readable output")
     doctor.set_defaults(handler=cmd_doctor)
+
+    discover = subparsers.add_parser(
+        "discover", help="build a --file wallet list from a token's holders"
+    )
+    discover.add_argument("--token", required=True, help="token contract address (0x + 40 hex)")
+    discover.add_argument("--chain", default="bsc", help="bsc (default) or ethereum")
+    discover.add_argument(
+        "--csv",
+        type=Path,
+        help="local CSV export used when the API is unavailable (first column = wallet)",
+    )
+    discover.add_argument(
+        "--out",
+        type=Path,
+        help="output .txt path (default <out>/holders_<contract>.txt)",
+    )
+    discover.add_argument(
+        "--limit", type=int, default=100, help="how many holders to request (default 100)"
+    )
+    discover.set_defaults(handler=cmd_discover)
 
     validate_cmd = subparsers.add_parser("validate", help="validate one address without network calls")
     validate_cmd.add_argument("--network", required=True)
@@ -337,6 +365,57 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print("all checks are read-only: nothing is signed or broadcast")
 
     return exit_code(checks)
+
+
+def cmd_discover(args: argparse.Namespace) -> int:
+    contract = normalize_address(args.token)
+    if contract is None:
+        print(
+            f"error: --token must be a 0x-prefixed 20-byte contract address, got {args.token!r}",
+            file=sys.stderr,
+        )
+        return 2
+
+    chain_id = CHAIN_IDS.get(args.chain.strip().lower())
+    if chain_id is None:
+        print(
+            f"error: unknown chain {args.chain!r}; expected bsc or ethereum",
+            file=sys.stderr,
+        )
+        return 2
+
+    if not 1 <= args.limit <= 1000:
+        print("error: --limit must be between 1 and 1000", file=sys.stderr)
+        return 2
+
+    settings = Settings.load()
+    out_path = args.out or settings.output_dir / f"holders_{contract}.txt"
+
+    def api_fetch() -> list[str]:
+        if not settings.has_etherscan_key:
+            raise ConfigError("ETHERSCAN_API_KEY is not set")
+        with HttpClient(timeout=settings.request_timeout) as client:
+            return fetch_token_holders(
+                client,
+                settings.etherscan_api_key or "",
+                contract,
+                chain_id=chain_id,
+                offset=args.limit,
+            )
+
+    try:
+        addresses, source = discover_holders(api_fetch, csv_path=args.csv)
+    except DiscoveryError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    count = write_holders(out_path, addresses)
+    print(f"contract: {contract}")
+    print(f"source  : {source}")
+    print(f"holders : {count}")
+    print(f"written : {out_path}")
+    print(f"next    : python -m wallet_analyzer analyze --file {out_path}")
+    return 0
 
 
 def cmd_validate(args: argparse.Namespace) -> int:

@@ -1,0 +1,6 @@
+address,balance_usd,holder_type
+0x28C6c06298d514Db089934071355E5743bf21d60,1234.50,exchange
+0x1fbe2acee135d991592f167ac371f3dd893a508b,999.00,exchange
+0x1FBe2AcEe135D991592f167Ac371f3DD893A508B,999.00,duplicate-row
+not_an_address,0.00,note
+0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D,50.00,contract

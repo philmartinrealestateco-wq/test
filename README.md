@@ -253,6 +253,7 @@ why a wallet is not `VERIFIED`.
 | BNB Smart Chain tokens | public JSON-RPC `eth_call` (`balanceOf`, `decimals`, `symbol`) | no | BEP-20 balances from the allowlist, batched |
 | BEP-20 prices | `api.coingecko.com/api/v3/simple/token_price/binance-smart-chain` | no | USD per token contract, one contract per request |
 | Solana | JSON-RPC `getBalance`, `getSignaturesForAddress` | no | lamports, newest successful signature |
+| Token holders | `api.etherscan.io/v2/api` `module=token&action=tokenholderlist` | yes (Pro) | discovery only; CSV fallback otherwise |
 | Prices | `api.coingecko.com/api/v3/simple/price` | no | BTC/ETH/BNB/SOL in USD |
 | Prices (fallback) | `api.coinbase.com/v2/prices/{PAIR}-USD/spot` | no | per-asset spot |
 
@@ -326,6 +327,7 @@ python -m wallet_analyzer analyze [options]
 python -m wallet_analyzer prices [--force]
 python -m wallet_analyzer providers
 python -m wallet_analyzer doctor [--json]
+python -m wallet_analyzer discover --token 0x... [--chain bsc|ethereum] [--csv PATH] [--out PATH]
 python -m wallet_analyzer validate --network ethereum --address 0x...
 ```
 
@@ -382,6 +384,40 @@ Target Matches (50,000 - 900,000 USD): 2
   written to C:\...\out\report_matches.csv
 ```
 
+### Discovering holders (`discover`)
+
+Address discovery cannot use `eth_getLogs` (public nodes reject it), so this
+command populates a holder list from an indexed source instead:
+
+```bat
+python -m wallet_analyzer discover --token 0x55d398326f99059fF775485246999027B3197955
+python -m wallet_analyzer discover --token 0x55d3... --csv data\dune_holders_sample.csv
+```
+
+It calls Etherscan V2 `module=token&action=tokenholderlist` with
+`ETHERSCAN_API_KEY`. **That endpoint is Pro-only on both chains** — BSC answers
+"Free API access is not supported for this chain", Ethereum answers "API Pro
+endpoint" — so with a free key the command falls back to `--csv`: it reads wallet
+addresses from the **first column** of a local export (Dune and similar) and skips
+anything that is not a 20-byte hex address, which drops headers and notes
+automatically. Duplicate addresses are collapsed and every address is written in
+EIP-55 form.
+
+```
+contract: 0x55d398326f99059fF775485246999027B3197955
+source  : CSV fallback (dune_holders_sample.csv)
+holders : 3
+written : out\holders_usdt.txt
+next    : python -m wallet_analyzer analyze --file out\holders_usdt.txt
+```
+
+* `--chain` selects `bsc` (chainid 56, default) or `ethereum` (1).
+* `--limit` requests N holders (default 100, maximum 1000).
+* `--out` defaults to `<out>/holders_<contract>.txt`; the file is one address per
+  line with no header, so it is valid `--file` input as-is.
+* With no `--csv` and an unavailable API, the command exits `2` and repeats the
+  provider's reason plus the hint to pass `--csv`.
+
 Exit codes: `0` success, `1` invalid address (`validate`) or a required service
 down (`doctor`), `2` configuration or input error, `3` no price feed, `130`
 interrupted.
@@ -394,7 +430,7 @@ interrupted.
 .venv\Scripts\python.exe -m pytest
 ```
 
-208 tests, no network access required. Covered: Keccak-256/EIP-55 published
+236 tests, no network access required. Covered: Keccak-256/EIP-55 published
 vectors, base58check, bech32/bech32m, address validation, input parsing,
 provider payload handling for all four chains, analyzer filtering and failure
 semantics, CSV/XLSX contents, price fallback and caching, dashboard escaping,
@@ -404,9 +440,11 @@ batched scans with single-call fallback, metadata caching, per-wallet token
 valuation, PARTIAL downgrade), transport retry behaviour (429 backoff,
 persistent-429 exhaustion, default no-retry on 400, opt-in 400 retries,
 per-contract price isolation), batch-wide price caching, Solana zero-balance and
-malformed-payload handling, and bulk mode (file parsing, address grouping,
-CSV header-once appending, target-match selection and its filtered file, and
-continuing past a failed wallet).
+malformed-payload handling, bulk mode (file parsing, address grouping, CSV
+header-once appending, target-match selection and its filtered file, and
+continuing past a failed wallet), and discovery (Etherscan holder payload
+parsing, Pro-plan errors, CSV first-column extraction, dedupe, and the
+`--file`-ready output format).
 
 The suite is the reason a real bug was caught early: the base58check verifier
 initially hashed the checksum together with the payload, which rejected every
