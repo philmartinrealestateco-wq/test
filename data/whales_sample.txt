@@ -1,0 +1,28 @@
+# =====================================================================
+# High-Activity & Whale Wallets Sample (ETH / BSC / BTC / SOL)
+# =====================================================================
+# --- Ethereum / BSC ---
+# Binance Hot Wallet 2 (ETH)
+0x28C6c06298d514Db089934071355E5743bf21d60
+# Binance Hot Wallet 19 (ETH)
+0x1fbe2acee135d991592f167ac371f3dd893a508b
+# Uniswap V2 Router (ETH)
+0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D
+# PancakeSwap V2 Router (BSC)
+0x10ED43C718714eb63d5aA57B78B54704E256024E
+# Binance Whale / Cold Wallet (ETH)
+0x21a31Ee1afC51d94C2eFcCAa2092aD1028285549
+# Kraken 4 (ETH)
+0x267be1C1D684F78cb4F6a176C4911b741E4Ffdc0
+
+# --- Bitcoin ---
+# Binance Cold Wallet (BTC)
+34xp4vRoCGJym3xR7yCVPFHoCNxv4Twseo
+# Bitfinex Cold Wallet (BTC)
+bc1qgdjqv0av3q56jvd82tkdjpy7gdp9ut8tlqmgrpmv24sq90ecnvqqjwvw97
+# Top Whale Wallet (BTC)
+1Ay8vMC7R1UbyCCZRVULMV7iQpHSAbguJP
+
+# --- Solana ---
+# High-Volume Trader / Smart Money Whale (SOL)
+5FGoPPj1nL8LCnfVnpTmreqQtqLuMXXAwuS1uahMrp8V
