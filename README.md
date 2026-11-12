@@ -295,7 +295,11 @@ Design notes:
   sees. Current sustained intervals: Etherscan 0.25 s, Blockscout 0.25 s,
   blockchain.com 1.0 s, Solana public 0.7 s, CoinGecko 2.0 s.
 * **Retries** cover `429/5xx` and transport errors with exponential backoff plus
-  jitter, honouring `Retry-After`. Token-price calls opt into retrying `400` as
+  jitter, honouring `Retry-After`. A `200` whose JSON body reports throttling
+  (Etherscan's `status: "0"` / `NOTOK` envelope containing "Max calls per sec"
+  or "Max rate limit reached") is treated exactly like `429`; a bare `NOTOK`
+  with a non-throttling reason such as an invalid key or missing plan coverage
+  still fails fast. Token-price calls opt into retrying `400` as
   well, since CoinGecko returns that status for throttling-adjacent rejections of
   a single contract; a `400` on any other endpoint is still treated as final.
 * **Secrets never leave `net.py`'s boundary**: exception messages are scrubbed of
@@ -475,13 +479,13 @@ credential resolution and secret scrubbing, the `doctor` status rules, the
 BEP-20 layer (selectors, ABI string/bytes32 symbol decoding, decimals bounds,
 batched scans with single-call fallback, metadata caching, per-wallet token
 valuation, PARTIAL downgrade), transport retry behaviour (429 backoff,
-persistent-429 exhaustion, default no-retry on 400, opt-in 400 retries,
-per-contract price isolation), batch-wide price caching, Solana zero-balance and
-malformed-payload handling, bulk mode (file parsing, address grouping, CSV
-header-once appending, target-match selection and its filtered file, and
-continuing past a failed wallet), and discovery (Etherscan holder payload
-parsing, Pro-plan errors, CSV first-column extraction, dedupe, and the
-`--file`-ready output format).
+persistent-429 exhaustion, HTTP-200 body throttling, default no-retry on 400,
+opt-in 400 retries, per-contract price isolation), batch-wide price caching,
+Solana zero-balance and malformed-payload handling, bulk mode (file parsing,
+address grouping, CSV header-once appending, target-match selection and its
+filtered file, and continuing past a failed wallet), and discovery (Etherscan
+holder payload parsing, Pro-plan errors, CSV first-column extraction, dedupe,
+and the `--file`-ready output format).
 
 The suite is the reason a real bug was caught early: the base58check verifier
 initially hashed the checksum together with the payload, which rejected every

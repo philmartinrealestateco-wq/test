@@ -109,6 +109,77 @@ def test_persistent_429_exhausts_attempts_with_status() -> None:
     assert session.attempts == 4
 
 
+def test_http_200_rate_limit_body_is_retried(slept) -> None:
+    limited = {
+        "status": "0",
+        "message": "NOTOK",
+        "result": "Max calls per sec rate limit reached (3/sec)",
+    }
+    client, session = client_with(
+        [FakeResponse(200, limited), FakeResponse(200, {"status": "1", "result": "0x0"})]
+    )
+
+    payload = client.get_json("https://api.etherscan.io/v2/api", host=HOST)
+
+    assert payload == {"status": "1", "result": "0x0"}
+    assert session.attempts == 2
+    assert max(slept) >= 0.8
+
+
+def test_persistent_http_200_rate_limit_exhausts_with_429_status() -> None:
+    limited = {
+        "status": "0",
+        "message": "NOTOK",
+        "result": "Max calls per sec rate limit reached (3/sec)",
+    }
+    client, session = client_with([FakeResponse(200, limited) for _ in range(4)])
+
+    with pytest.raises(ProviderError) as excinfo:
+        client.get_json("https://api.etherscan.io/v2/api", host=HOST)
+
+    assert excinfo.value.status == 429
+    assert "rate limited" in str(excinfo.value)
+    assert "3/sec" in str(excinfo.value)
+    assert session.attempts == 4
+
+
+def test_http_200_notok_without_throttling_is_not_retried() -> None:
+    client, session = client_with(
+        [
+            FakeResponse(
+                200,
+                {"status": "0", "message": "NOTOK", "result": "Invalid API Key"},
+            )
+        ]
+    )
+
+    payload = client.get_json("https://api.etherscan.io/v2/api", host=HOST)
+
+    assert payload["result"] == "Invalid API Key"
+    assert session.attempts == 1
+
+
+def test_json_rpc_429_error_body_is_retried() -> None:
+    client, session = client_with(
+        [
+            FakeResponse(
+                200,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "error": {"code": 429, "message": "Too Many Requests"},
+                },
+            ),
+            FakeResponse(200, {"jsonrpc": "2.0", "id": 1, "result": "0x1"}),
+        ]
+    )
+
+    payload = client.get_json("https://rpc.example", host=HOST)
+
+    assert payload["result"] == "0x1"
+    assert session.attempts == 2
+
+
 def test_400_is_not_retried_by_default() -> None:
     client, session = client_with([FakeResponse(400, {"error": "bad request"})])
 

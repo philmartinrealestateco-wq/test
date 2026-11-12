@@ -36,6 +36,59 @@ _UUID = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
 )
 
+_RATE_LIMIT_MARKERS = (
+    "rate limit",
+    "rate-limit",
+    "ratelimit",
+    "too many requests",
+    "throttl",
+    "max calls per sec",
+)
+
+
+def _rate_limit_detail(payload: object) -> str | None:
+    """Return throttling text when a successful HTTP body reports a rate limit.
+
+    Etherscan signals per-second throttling as HTTP 200 with
+    ``{"status": "0", "message": "NOTOK", "result": "Max calls per sec ..."}``.
+    ``NOTOK`` alone is deliberately not enough: the same envelope carries
+    invalid-key and plan errors, which must fail fast instead of being retried.
+    """
+
+    if not isinstance(payload, dict):
+        return None
+
+    error = payload.get("error")
+    if isinstance(error, dict):
+        code = error.get("code")
+        if code in (429, "429"):
+            return str(error.get("message") or "HTTP 429")
+        candidates = [error["message"]] if isinstance(error.get("message"), str) else []
+    elif isinstance(error, str):
+        candidates = [error]
+    else:
+        candidates = []
+
+    if payload.get("code") in (429, "429"):
+        return str(payload.get("message") or "HTTP 429")
+
+    status = str(payload.get("status", ""))
+    envelope_message = payload.get("message")
+    if status == "0" or (
+        isinstance(envelope_message, str) and envelope_message.upper() == "NOTOK"
+    ):
+        if isinstance(envelope_message, str):
+            candidates.append(envelope_message)
+        result = payload.get("result")
+        if isinstance(result, str):
+            candidates.append(result)
+
+    text = " ".join(candidates).strip()
+    lowered = text.lower()
+    if any(marker in lowered for marker in _RATE_LIMIT_MARKERS):
+        return text
+    return None
+
 
 def scrub(text: str) -> str:
     """Strip anything that looks like a credential from a message.
@@ -239,13 +292,29 @@ class HttpClient:
                 )
 
             try:
-                return response.json()
+                payload = response.json()
             except ValueError as exc:
                 raise ProviderError(
                     f"non-JSON response from {resolved_host}",
                     host=resolved_host,
                     status=response.status_code,
                 ) from exc
+
+            detail = _rate_limit_detail(payload)
+            if detail is not None:
+                last_status = 429
+                last_error = f"rate limited: {detail}"
+                LOG.debug(
+                    "%s attempt %s/%s returned HTTP 200 with %s",
+                    resolved_host,
+                    attempt,
+                    policy.max_attempts,
+                    last_error,
+                )
+                self._sleep(attempt, response.headers.get("Retry-After"))
+                continue
+
+            return payload
 
         raise ProviderError(
             f"{resolved_host} unavailable after {policy.max_attempts} attempts ({last_error})",
