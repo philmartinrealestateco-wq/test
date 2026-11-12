@@ -318,6 +318,7 @@ python -m wallet_analyzer analyze [options]
     --no-dashboard          skip the HTML file
     --force-prices          bypass the price cache
     --quiet                 only print the final summary
+    --filter                with --file: also write <out>/report_matches.csv
     --no-tokens             skip BEP-20 balances (native coin only)
     --token 0xADDR[:SYM[:D]] extra BEP-20 contract to check; repeatable
     --token-file PATH       CSV of contracts (contract[,symbol[,decimals]])
@@ -364,6 +365,22 @@ Results are appended to `<out>/report.csv`:
   blank USD cells; the batch continues with the next one.
 * `--file` and `--input` are mutually exclusive: `--input` runs a single batch and
   writes the full timestamped reports, `--file` streams rows incrementally.
+* Every run ends with a **Target Matches** section listing the rows whose
+  `Total USD` is inside `MIN_USD`–`MAX_USD` (inclusive, highest first). Rows with
+  an unknown total — an incomplete valuation — are never listed.
+* `--filter` additionally writes those rows to `<out>/report_matches.csv`, using
+  the same six columns and the same header-once append behaviour.
+
+```
+bulk complete: 16 row(s) across 10 wallet(s)
+  report  : C:\...\out\report.csv
+  matches : C:\...\out\report_matches.csv
+
+Target Matches (50,000 - 900,000 USD): 2
+  0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D  BNB Smart Chain    457,104.25  PARTIAL
+  0x267be1C1D684F78cb4F6a176C4911b741E4Ffdc0  Ethereum           371,439.80  VERIFIED
+  written to C:\...\out\report_matches.csv
+```
 
 Exit codes: `0` success, `1` invalid address (`validate`) or a required service
 down (`doctor`), `2` configuration or input error, `3` no price feed, `130`
@@ -377,7 +394,7 @@ interrupted.
 .venv\Scripts\python.exe -m pytest
 ```
 
-194 tests, no network access required. Covered: Keccak-256/EIP-55 published
+208 tests, no network access required. Covered: Keccak-256/EIP-55 published
 vectors, base58check, bech32/bech32m, address validation, input parsing,
 provider payload handling for all four chains, analyzer filtering and failure
 semantics, CSV/XLSX contents, price fallback and caching, dashboard escaping,
@@ -386,9 +403,10 @@ BEP-20 layer (selectors, ABI string/bytes32 symbol decoding, decimals bounds,
 batched scans with single-call fallback, metadata caching, per-wallet token
 valuation, PARTIAL downgrade), transport retry behaviour (429 backoff,
 persistent-429 exhaustion, default no-retry on 400, opt-in 400 retries,
-per-contract price isolation), batch-wide price caching, and bulk mode (file
-parsing, address grouping, CSV header-once appending, and continuing past a
-failed wallet).
+per-contract price isolation), batch-wide price caching, Solana zero-balance and
+malformed-payload handling, and bulk mode (file parsing, address grouping,
+CSV header-once appending, target-match selection and its filtered file, and
+continuing past a failed wallet).
 
 The suite is the reason a real bug was caught early: the base58check verifier
 initially hashed the checksum together with the payload, which rejected every

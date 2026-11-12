@@ -268,10 +268,14 @@ def test_bsc_degrades_when_activity_provider_fails() -> None:
 # -- Solana --------------------------------------------------------------
 
 
-def _solana_client(signatures):
+def _solana_client(signatures, *, lamports: int | None = 9300003246657371):
     def handler(payload):
         if payload["method"] == "getBalance":
-            return {"jsonrpc": "2.0", "id": 1, "result": {"context": {"slot": 1}, "value": 9300003246657371}}
+            return {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {"context": {"slot": 1}, "value": lamports},
+            }
         if payload["method"] == "getSignaturesForAddress":
             return {"jsonrpc": "2.0", "id": 1, "result": signatures}
         raise AssertionError(f"unexpected method {payload['method']}")
@@ -323,6 +327,85 @@ def test_solana_rejects_a_bare_key_instead_of_a_url() -> None:
     assert "SOLANA_RPC_URL" in message
     assert "d00f_MY_ok" not in message
     assert client.post_calls == []
+
+
+# -- Solana: zero balance and malformed responses ------------------------
+
+
+def test_solana_zero_balance_is_verified_not_an_error() -> None:
+    client = _solana_client([], lamports=0)
+
+    result = SolanaProvider(client, "https://api.mainnet-beta.solana.com").fetch(SOL)
+
+    assert result.balance == Decimal(0)
+    assert result.balance_verified
+    assert result.activity_verified
+    assert result.last_tx_at is None
+
+
+def test_solana_zero_balance_with_history_keeps_the_timestamp() -> None:
+    client = _solana_client(
+        [{"signature": "x", "blockTime": 1794412726, "err": None}], lamports=0
+    )
+
+    result = SolanaProvider(client, "https://api.mainnet-beta.solana.com").fetch(SOL)
+
+    assert result.balance == Decimal(0)
+    assert result.last_tx_at == datetime.fromtimestamp(1794412726, tz=timezone.utc)
+
+
+def test_solana_null_balance_value_is_rejected() -> None:
+    client = _solana_client([], lamports=None)
+
+    with pytest.raises(ProviderError, match="non-integer lamport balance"):
+        SolanaProvider(client, "https://api.mainnet-beta.solana.com").fetch(SOL)
+
+
+def test_solana_missing_balance_value_is_rejected() -> None:
+    client = FakeClient(
+        post_handler=lambda payload: {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {"context": {"slot": 1}},
+        }
+    )
+
+    with pytest.raises(ProviderError, match="unexpected getBalance payload"):
+        SolanaProvider(client, "https://api.mainnet-beta.solana.com").fetch(SOL)
+
+
+def test_solana_non_list_signatures_are_rejected() -> None:
+    def handler(payload):
+        if payload["method"] == "getBalance":
+            return {"jsonrpc": "2.0", "id": 1, "result": {"context": {}, "value": 0}}
+        return {"jsonrpc": "2.0", "id": 1, "result": {"not": "a list"}}
+
+    with pytest.raises(ProviderError, match="unexpected signature list"):
+        SolanaProvider(
+            FakeClient(post_handler=handler), "https://api.mainnet-beta.solana.com"
+        ).fetch(SOL)
+
+
+def test_solana_null_signature_result_is_rejected() -> None:
+    def handler(payload):
+        if payload["method"] == "getBalance":
+            return {"jsonrpc": "2.0", "id": 1, "result": {"context": {}, "value": 0}}
+        return {"jsonrpc": "2.0", "id": 1, "result": None}
+
+    with pytest.raises(ProviderError, match="unexpected signature list"):
+        SolanaProvider(
+            FakeClient(post_handler=handler), "https://api.mainnet-beta.solana.com"
+        ).fetch(SOL)
+
+
+def test_solana_signature_without_blocktime_is_not_activity() -> None:
+    client = _solana_client([{"signature": "x", "err": None}])
+
+    result = SolanaProvider(client, "https://api.mainnet-beta.solana.com").fetch(SOL)
+
+    assert result.last_tx_at is None
+    assert result.activity_verified is False
+    assert "without blockTime" in " ".join(result.notes)
 
 
 def test_bsc_rejects_a_malformed_rpc_url() -> None:

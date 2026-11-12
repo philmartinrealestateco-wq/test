@@ -12,7 +12,14 @@ from pathlib import Path
 
 from .analyzer import WalletAnalyzer
 from .bep20 import Bep20Provider
-from .bulk import ERROR_STATUS, group_by_address, run_bulk
+from .bulk import (
+    ERROR_STATUS,
+    append_rows,
+    format_target_matches,
+    group_by_address,
+    run_bulk,
+    target_matches,
+)
 from .config import ConfigError, Settings
 from .dashboard import write_dashboard
 from .health import exit_code, format_summary, format_table, run_checks
@@ -76,6 +83,14 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--no-dashboard", action="store_true", help="skip the HTML dashboard")
     analyze.add_argument("--force-prices", action="store_true", help="bypass the price cache")
     analyze.add_argument("--quiet", action="store_true", help="only print the final summary")
+    analyze.add_argument(
+        "--filter",
+        action="store_true",
+        help=(
+            "with --file: also write <out>/report_matches.csv containing only the "
+            "wallets whose Total USD is inside the balance range"
+        ),
+    )
     analyze.add_argument(
         "--no-tokens",
         action="store_true",
@@ -142,6 +157,10 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def cmd_analyze(args: argparse.Namespace) -> int:
+    if args.filter and not args.file:
+        print("error: --filter requires --file (bulk mode)", file=sys.stderr)
+        return 2
+
     settings = Settings.load().with_overrides(
         min_usd=_decimal_arg(args.min_usd, "--min-usd"),
         max_usd=_decimal_arg(args.max_usd, "--max-usd"),
@@ -183,9 +202,14 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 
         if args.file:
             report_path = settings.output_dir / "report.csv"
+            matches_path = (
+                settings.output_dir / "report_matches.csv" if args.filter else None
+            )
             groups = group_by_address(entries)
             print(f"bulk mode: {len(groups)} wallet(s) from {args.file.name}")
             print(f"report: {report_path} (appending)")
+            if matches_path is not None:
+                print(f"matches: {matches_path} (appending)")
             print()
             rows = run_bulk(
                 groups,
@@ -194,7 +218,19 @@ def cmd_analyze(args: argparse.Namespace) -> int:
                 report_path,
                 progress=None if args.quiet else _bulk_progress,
             )
-            _print_bulk_summary(rows, report_path)
+            matches = target_matches(rows, settings.min_usd, settings.max_usd)
+            if matches_path is not None:
+                append_rows(matches_path, matches)
+            _print_bulk_summary(rows, report_path, matches_path)
+            print()
+            print(
+                format_target_matches(
+                    matches,
+                    settings.min_usd,
+                    settings.max_usd,
+                    matches_path=matches_path,
+                )
+            )
             return 0
 
         if not args.quiet:
@@ -390,7 +426,9 @@ def _bulk_progress(index: int, total: int, address: str) -> None:
     print(f"[{index}/{total}] Processing {_short(address)}", flush=True)
 
 
-def _print_bulk_summary(rows, report_path: Path) -> None:
+def _print_bulk_summary(
+    rows, report_path: Path, matches_path: Path | None = None
+) -> None:
     failures = sum(1 for row in rows if row.status == ERROR_STATUS)
     wallets = len({row.wallet for row in rows})
     print()
@@ -398,6 +436,8 @@ def _print_bulk_summary(rows, report_path: Path) -> None:
     if failures:
         print(f"  failures: {failures} (ERROR rows kept in the report)")
     print(f"  report  : {report_path}")
+    if matches_path is not None:
+        print(f"  matches : {matches_path}")
 
 
 def _progress_printer():

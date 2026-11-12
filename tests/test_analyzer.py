@@ -23,6 +23,7 @@ from wallet_analyzer.providers.base import ProviderResult
 
 NOW = datetime(2026, 11, 11, 12, 0, tzinfo=timezone.utc)
 ETH_ADDRESS = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+SOL_ADDRESS = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"
 TOKEN_USDT = "0x55d398326f99059fF775485246999027B3197955"
 SETTINGS = AnalysisSettings(min_usd=Decimal("50000"), max_usd=Decimal("900000"), activity_days=30)
 
@@ -374,6 +375,20 @@ def test_ethereum_records_ignore_the_token_layer() -> None:
     assert record.tokens_checked is False
     assert record.total_usd == record.usd_value
     assert record.verification_status is VerificationStatus.VERIFIED
+
+
+def test_solana_rpc_failure_is_unverified_not_zero() -> None:
+    provider = FakeProvider(
+        Network.SOLANA,
+        error=ProviderError("HTTP 429 from api.mainnet-beta.solana.com"),
+    )
+    result = analyse(provider, [AddressEntry(Network.SOLANA, SOL_ADDRESS)])
+    record = result.records[0]
+
+    assert record.verification_status is VerificationStatus.UNVERIFIED
+    assert record.balance is None
+    assert record.usd_value is None
+    assert "lookup failed" in record.joined_notes()
 
 
 def test_pricing_engine_failure_does_not_abort_the_run() -> None:

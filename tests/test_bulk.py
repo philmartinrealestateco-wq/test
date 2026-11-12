@@ -14,9 +14,11 @@ from wallet_analyzer.bulk import (
     BulkRow,
     append_rows,
     error_rows,
+    format_target_matches,
     group_by_address,
     rows_for_records,
     run_bulk,
+    target_matches,
 )
 from wallet_analyzer.inputs import load_file
 from wallet_analyzer.models import AddressEntry, Network, VerificationStatus
@@ -234,3 +236,85 @@ def test_run_bulk_with_no_groups_writes_nothing(tmp_path: Path) -> None:
 
     assert rows == []
     assert not report.exists()
+
+
+# -- target matches ------------------------------------------------------
+
+MIN = Decimal("50000")
+MAX = Decimal("900000")
+
+
+def in_range_row(wallet: str, total: str, status: str = "VERIFIED") -> BulkRow:
+    return BulkRow(wallet, "Bitcoin", Decimal(total), None, Decimal(total), status)
+
+
+def test_target_matches_use_inclusive_bounds_and_sort_descending() -> None:
+    rows = [
+        in_range_row("below", "49999.99"),
+        in_range_row("low-edge", "50000"),
+        in_range_row("middle", "100000"),
+        in_range_row("high-edge", "900000"),
+        in_range_row("above", "900000.01"),
+    ]
+
+    matches = target_matches(rows, MIN, MAX)
+
+    assert [row.wallet for row in matches] == ["high-edge", "middle", "low-edge"]
+
+
+def test_target_matches_skip_rows_without_a_total() -> None:
+    rows = [
+        BulkRow("unknown", "Bitcoin", Decimal("1"), None, None, "PARTIAL"),
+        in_range_row("known", "75000"),
+    ]
+
+    assert [row.wallet for row in target_matches(rows, MIN, MAX)] == ["known"]
+
+
+def test_format_target_matches_lists_wallet_network_total_and_status() -> None:
+    matches = [
+        BulkRow("0xabc", "BNB Smart Chain", Decimal("1"), Decimal("2"), Decimal("123456.78"), "PARTIAL")
+    ]
+
+    text = format_target_matches(matches, MIN, MAX)
+
+    assert "Target Matches (50,000 - 900,000 USD): 1" in text
+    assert "0xabc" in text
+    assert "BNB Smart Chain" in text
+    assert "123,456.78" in text
+    assert "PARTIAL" in text
+
+
+def test_format_target_matches_says_none_when_empty() -> None:
+    text = format_target_matches([], MIN, MAX)
+    assert "Target Matches (50,000 - 900,000 USD): 0" in text
+    assert "none" in text
+
+
+def test_format_target_matches_mentions_the_filtered_file() -> None:
+    text = format_target_matches([], MIN, MAX, matches_path=Path("out/report_matches.csv"))
+    assert "written to out\\report_matches.csv" in text or "written to out/report_matches.csv" in text
+
+
+def test_filtered_file_contains_only_in_range_rows(tmp_path: Path) -> None:
+    rows = [
+        in_range_row("inside", "100000"),
+        in_range_row("outside", "10"),
+        BulkRow("unknown", "Bitcoin", None, None, None, "PARTIAL"),
+    ]
+    path = tmp_path / "report_matches.csv"
+
+    append_rows(path, target_matches(rows, MIN, MAX))
+
+    contents = read_rows(path)
+    assert contents[0] == list(COLUMNS)
+    assert [row[0] for row in contents[1:]] == ["inside"]
+
+
+def test_filter_requires_bulk_mode(capsys) -> None:
+    from wallet_analyzer.cli import main
+
+    code = main(["analyze", "--filter", "--address", f"bitcoin:{BTC}"])
+
+    assert code == 2
+    assert "--filter requires --file" in capsys.readouterr().err

@@ -140,3 +140,12 @@ def test_persistent_400_after_opt_in_raises_with_status() -> None:
 
     assert excinfo.value.status == 400
     assert session.attempts == 4
+
+
+def test_empty_http_body_is_rejected_as_non_json() -> None:
+    client, session = client_with([FakeResponse(200, None)])
+
+    with pytest.raises(ProviderError, match="non-JSON response"):
+        client.get_json("https://api.example", host=HOST)
+
+    assert session.attempts == 1

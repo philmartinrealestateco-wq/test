@@ -114,6 +114,42 @@ def append_rows(path: Path, rows: Iterable[BulkRow]) -> int:
     return count
 
 
+def target_matches(
+    rows: Iterable[BulkRow], minimum: Decimal, maximum: Decimal
+) -> list[BulkRow]:
+    """Rows whose Total USD sits inside the configured window, highest first.
+
+    A row with an unknown total is excluded: an incomplete valuation cannot be
+    claimed to be in range.
+    """
+
+    selected = [
+        row
+        for row in rows
+        if row.total_usd is not None and minimum <= row.total_usd <= maximum
+    ]
+    selected.sort(key=lambda row: row.total_usd or Decimal(0), reverse=True)
+    return selected
+
+
+def format_target_matches(
+    matches: Sequence[BulkRow],
+    minimum: Decimal,
+    maximum: Decimal,
+    *,
+    matches_path: Path | None = None,
+) -> str:
+    lines = [f"Target Matches ({minimum:,.0f} - {maximum:,.0f} USD): {len(matches)}"]
+    if not matches:
+        lines.append("  none")
+    for row in matches:
+        total = f"{row.total_usd:,.2f}" if row.total_usd is not None else "-"
+        lines.append(f"  {row.wallet:<42} {row.network:<18} {total:>14}  {row.status}")
+    if matches_path is not None:
+        lines.append(f"  written to {matches_path}")
+    return "\n".join(lines)
+
+
 def run_bulk(
     groups: Sequence[Sequence[AddressEntry]],
     analyzer: Analyzer,
