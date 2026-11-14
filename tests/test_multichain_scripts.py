@@ -42,6 +42,61 @@ def test_aggregate_respects_a_custom_window(tmp_path):
     assert [entry["wallet"] for entry in narrow] == ["0xaaa"]
 
 
+def test_aggregate_drops_scanned_token_contracts(tmp_path):
+    module = _load("batch_scan_tokens", "batch_scan_tokens.py")
+    path = tmp_path / "DAI_matches.csv"
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(module.REPORT_COLUMNS)
+        writer.writerow(
+            [
+                "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+                "BNB Smart Chain",
+                "0",
+                "50856.51",
+                "50856.51",
+                "PARTIAL",
+            ]
+        )
+        writer.writerow(["0xaaa", "Ethereum", "100000", "0", "100000.00", "VERIFIED"])
+
+    skipped: set[str] = set()
+    entries = module.aggregate(
+        [("DAI", path)], Decimal("50000"), Decimal("900000"), skipped=skipped
+    )
+
+    assert [entry["wallet"] for entry in entries] == ["0xaaa"]
+    assert skipped == {"0x6b175474e89094c44da98b954eedeac495271d0f"}
+
+
+def test_aggregate_excludes_extra_token_addresses(tmp_path):
+    module = _load("batch_scan_tokens", "batch_scan_tokens.py")
+    token = "0x55d398326f99059fF775485246999027B3197955"
+    path = tmp_path / "TOKEN_matches.csv"
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(module.REPORT_COLUMNS)
+        writer.writerow([token, "BNB Smart Chain", "0", "200000", "200000.00", "VERIFIED"])
+        writer.writerow(["0xbbb", "BNB Smart Chain", "0", "200000", "200000.00", "VERIFIED"])
+
+    entries = module.aggregate(
+        [("TOKEN", path)],
+        Decimal("50000"),
+        Decimal("900000"),
+        excluded={token.lower()},
+    )
+
+    assert [entry["wallet"] for entry in entries] == ["0xbbb"]
+
+
+def test_scanned_contracts_cover_the_pipeline_tokens():
+    scanner = _load("batch_scan_tokens", "batch_scan_tokens.py")
+    pipeline = _load("run_pipeline", "run_pipeline.py")
+
+    addresses = {address.lower() for _, address, _ in pipeline.TOKENS}
+    assert addresses <= set(scanner.SCANNED_TOKENS)
+
+
 def test_seed_addresses_validate_for_their_network():
     module = _load("fetch_btc_sol_holders", "fetch_btc_sol_holders.py")
 

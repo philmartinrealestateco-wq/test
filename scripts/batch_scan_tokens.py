@@ -9,7 +9,9 @@ For each ``SYMBOL:ADDRESS:CHAIN`` spec:
 
 Finally merge the per-token snapshots into ``out/master_targets.csv``, one row
 per unique wallet, keeping its highest Total USD and the union of the tokens and
-networks that surfaced it.
+networks that surfaced it. Token contracts are never targets: an address that is
+one of the scanned contracts (plus any ``--token`` address) is dropped from the
+master, so a contract's own holdings cannot rank as a wallet.
 """
 
 from __future__ import annotations
@@ -37,6 +39,15 @@ MIN_USD = Decimal("50000")
 MAX_USD = Decimal("900000")
 _ADDRESS = re.compile(r"0x[0-9a-fA-F]{40}")
 _CHAINS = {"eth": "eth", "ethereum": "eth", "bsc": "bsc", "bnb": "bsc"}
+#: Contracts this project screens, keyed by lowercase address. They hold their
+#: own supply, so a holder list inevitably contains them; they are excluded from
+#: the master. Must stay a superset of ``run_pipeline.TOKENS`` (asserted in the
+#: tests) because ``--aggregate-only`` runs without any ``--token`` specs.
+SCANNED_TOKENS = {
+    "0xdac17f958d2ee523a2206206994597c13d831ec7": "USDT",
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": "USDC",
+    "0x6b175474e89094c44da98b954eedeac495271d0f": "DAI",
+}
 
 
 @dataclass(frozen=True)
@@ -134,7 +145,16 @@ def aggregate(
     paths: list[tuple[str, Path]],
     minimum: Decimal = MIN_USD,
     maximum: Decimal = MAX_USD,
+    excluded: set[str] | None = None,
+    skipped: set[str] | None = None,
 ) -> list[dict[str, object]]:
+    """Merge snapshots into master rows, dropping scanned token contracts.
+
+    ``excluded`` holds lowercase addresses to ignore (defaults to
+    ``SCANNED_TOKENS``); each address actually dropped is added to ``skipped``.
+    """
+
+    contracts = set(SCANNED_TOKENS) if excluded is None else excluded
     merged: dict[str, dict[str, object]] = {}
 
     for symbol, path in paths:
@@ -147,6 +167,11 @@ def aggregate(
                 continue
 
             key = row["Wallet"].lower()
+            if key in contracts:
+                if skipped is not None:
+                    skipped.add(key)
+                continue
+
             entry = merged.get(key)
             if entry is None:
                 entry = {
@@ -280,7 +305,13 @@ def main() -> int:
         )
         return 1
 
-    entries = aggregate(paths, args.min_usd, args.max_usd)
+    excluded = set(SCANNED_TOKENS) | {spec.address.lower() for spec in args.token}
+    skipped: set[str] = set()
+    entries = aggregate(
+        paths, args.min_usd, args.max_usd, excluded=excluded, skipped=skipped
+    )
+    if skipped:
+        print(f"token contracts excluded: {', '.join(sorted(skipped))}")
     write_master(entries)
     print(f"master: {MASTER} ({len(entries)} unique wallet(s))")
 
