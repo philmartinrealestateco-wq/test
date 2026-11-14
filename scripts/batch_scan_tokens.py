@@ -26,6 +26,11 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from wallet_analyzer.tokens import DEFAULT_BEP20_TOKENS  # noqa: E402
+
 FETCH_SCRIPT = Path(__file__).resolve().parent / "fetch_blockscout_holders.py"
 SCAN_WRAPPER = ROOT / "scan_target.bat"
 OUT_DIR = ROOT / "out"
@@ -41,9 +46,13 @@ _ADDRESS = re.compile(r"0x[0-9a-fA-F]{40}")
 _CHAINS = {"eth": "eth", "ethereum": "eth", "bsc": "bsc", "bnb": "bsc"}
 #: Contracts this project screens, keyed by lowercase address. They hold their
 #: own supply, so a holder list inevitably contains them; they are excluded from
-#: the master. Must stay a superset of ``run_pipeline.TOKENS`` (asserted in the
-#: tests) because ``--aggregate-only`` runs without any ``--token`` specs.
+#: the master. Two sources, because a contract shows up on every leg it is read
+#: on: the Ethereum stablecoins ``run_pipeline`` scans, and the whole BEP-20
+#: allowlist the analyzer prices for BSC wallets. ``--aggregate-only`` runs
+#: without any ``--token`` specs, so this set has to stand alone (the tests keep
+#: it a superset of both lists).
 SCANNED_TOKENS = {
+    **{token.key: token.symbol for token in DEFAULT_BEP20_TOKENS},
     "0xdac17f958d2ee523a2206206994597c13d831ec7": "USDT",
     "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": "USDC",
     "0x6b175474e89094c44da98b954eedeac495271d0f": "DAI",

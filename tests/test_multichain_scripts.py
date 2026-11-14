@@ -11,6 +11,7 @@ from pathlib import Path
 
 from wallet_analyzer.inputs import load_file
 from wallet_analyzer.models import Network
+from wallet_analyzer.tokens import DEFAULT_BEP20_TOKENS
 from wallet_analyzer.validators import validate
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -95,6 +96,17 @@ def test_scanned_contracts_cover_the_pipeline_tokens():
 
     addresses = {address.lower() for _, address, _ in pipeline.TOKENS}
     assert addresses <= set(scanner.SCANNED_TOKENS)
+
+
+def test_scanned_contracts_cover_the_bep20_allowlist():
+    scanner = _load("batch_scan_tokens", "batch_scan_tokens.py")
+
+    assert {token.key for token in DEFAULT_BEP20_TOKENS} <= set(scanner.SCANNED_TOKENS)
+    assert set(scanner.SCANNED_TOKENS) == {token.key for token in DEFAULT_BEP20_TOKENS} | {
+        "0xdac17f958d2ee523a2206206994597c13d831ec7",
+        "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+        "0x6b175474e89094c44da98b954eedeac495271d0f",
+    }
 
 
 def test_seed_addresses_validate_for_their_network():
