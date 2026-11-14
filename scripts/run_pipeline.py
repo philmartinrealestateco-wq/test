@@ -109,6 +109,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="skip fetching/rescanning EVM tokens and reuse out/batch snapshots",
     )
     parser.add_argument(
+        "--reuse-holders",
+        action="store_true",
+        help=(
+            "screen the existing out/batch/<SYMBOL>_holders.csv instead of "
+            "re-fetching, for when the holder API is down"
+        ),
+    )
+    parser.add_argument(
         "--skip-btc-sol", action="store_true", help="leave Bitcoin/Solana untouched"
     )
     return parser
@@ -140,6 +148,8 @@ def main() -> int:
         ]
         for symbol, address, chain in TOKENS:
             command += ["--token", f"{symbol}:{address}:{chain}"]
+        if args.reuse_holders:
+            command.append("--reuse-holders")
         run_step(
             "fetch + screen USDT/USDC/DAI",
             command,

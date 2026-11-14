@@ -209,6 +209,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="skip fetching/scanning and rebuild master_targets.csv from out/batch",
     )
+    parser.add_argument(
+        "--reuse-holders",
+        action="store_true",
+        help=(
+            "screen out/batch/<SYMBOL>_holders.csv without re-fetching, for when "
+            "the holder API is unavailable"
+        ),
+    )
     return parser
 
 
@@ -245,7 +253,14 @@ def main() -> int:
             holders_csv = BATCH_DIR / f"{spec.symbol}_holders.csv"
             log_path = BATCH_DIR / f"{spec.symbol}.log"
             try:
-                fetch_holders(spec, args.limit, holders_csv)
+                if args.reuse_holders:
+                    if not holders_csv.exists():
+                        raise RuntimeError(
+                            f"--reuse-holders: missing holder file {holders_csv}"
+                        )
+                    print(f"  reusing holders: {holders_csv}")
+                else:
+                    fetch_holders(spec, args.limit, holders_csv)
                 before = len(read_rows(REPORT_MATCHES))
                 run_scan(spec, args.limit, holders_csv, log_path)
                 count, match_path = snapshot_matches(spec.symbol, before)
@@ -256,6 +271,14 @@ def main() -> int:
 
             paths.append((spec.symbol, match_path))
             print(f"  matches: {count} -> {match_path}")
+
+    if not args.aggregate_only and not paths:
+        # A provider outage must never replace a good master with an empty one.
+        print(
+            "error: every token failed; keeping the existing master_targets.csv",
+            file=sys.stderr,
+        )
+        return 1
 
     entries = aggregate(paths, args.min_usd, args.max_usd)
     write_master(entries)
