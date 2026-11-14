@@ -117,6 +117,21 @@ def scrub(text: str) -> str:
     return _SECRET_PARAM.sub(lambda match: f"{match.group(1)}=***", without_urls)
 
 
+#: A Retry-After beyond this is a ban, not pacing: retrying inside the run only
+#: wastes the wait, while another host may still answer.
+MAX_RETRY_AFTER = 120.0
+
+
+def _retry_after_is_long(value: str | None) -> bool:
+    if not value:
+        return False
+    try:
+        return float(value) > MAX_RETRY_AFTER
+    except ValueError:
+        # HTTP-date form; normal backoff is the right handling.
+        return False
+
+
 class ProviderError(RuntimeError):
     """A data source could not answer. Always safe to show to the user."""
 
@@ -143,6 +158,7 @@ _POLICIES: dict[str, HostPolicy] = {
     "api.etherscan.io": HostPolicy(0.25),
     "eth.blockscout.com": HostPolicy(0.25),
     "blockchain.info": HostPolicy(1.0),
+    "blockstream.info": HostPolicy(0.4),
     "api.mainnet-beta.solana.com": HostPolicy(0.7),
     "api.coingecko.com": HostPolicy(2.0),
     "api.coinbase.com": HostPolicy(0.4),
@@ -280,8 +296,16 @@ class HttpClient:
             if response.status_code in retryable:
                 last_status = response.status_code
                 last_error = f"HTTP {response.status_code}"
+                retry_after = response.headers.get("Retry-After")
+                if _retry_after_is_long(retry_after):
+                    raise ProviderError(
+                        f"{resolved_host} unavailable for {retry_after}s "
+                        f"(HTTP {response.status_code})",
+                        host=resolved_host,
+                        status=response.status_code,
+                    )
                 LOG.debug("%s attempt %s/%s returned %s", resolved_host, attempt, policy.max_attempts, last_error)
-                self._sleep(attempt, response.headers.get("Retry-After"))
+                self._sleep(attempt, retry_after)
                 continue
 
             if response.status_code >= 400:

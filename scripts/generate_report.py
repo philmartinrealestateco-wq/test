@@ -15,8 +15,10 @@ DEFAULT_INPUT = ROOT / "out" / "master_targets.csv"
 DEFAULT_OUTPUT = ROOT / "out" / "targets_report.html"
 
 EXPLORERS = {
+    "Bitcoin": ("Blockchain.com", "https://blockchain.com/explorer/addresses/btc/{address}"),
     "Ethereum": ("Etherscan", "https://etherscan.io/address/{address}"),
     "BNB Smart Chain": ("BscScan", "https://bscscan.com/address/{address}"),
+    "Solana": ("Solscan", "https://solscan.io/account/{address}"),
 }
 
 CSS = """
@@ -173,11 +175,19 @@ def _network_badges(networks: list[str], address: str) -> str:
     return "".join(badges)
 
 
-def render(entries: list[dict[str, object]], source: Path) -> str:
+def render(
+    entries: list[dict[str, object]],
+    source: Path,
+    minimum: Decimal = Decimal("50000"),
+    maximum: Decimal = Decimal("10000000"),
+) -> str:
+    window = f"${minimum:,.0f}–${maximum:,.0f}"
     verified = sum(1 for entry in entries if entry["status"] == "VERIFIED")
     partial = sum(1 for entry in entries if entry["status"] == "PARTIAL")
     eth_legs = sum(1 for entry in entries if "Ethereum" in entry["networks"])  # type: ignore[operator]
     bsc_legs = sum(1 for entry in entries if "BNB Smart Chain" in entry["networks"])  # type: ignore[operator]
+    btc_legs = sum(1 for entry in entries if "Bitcoin" in entry["networks"])  # type: ignore[operator]
+    sol_legs = sum(1 for entry in entries if "Solana" in entry["networks"])  # type: ignore[operator]
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     rows: list[str] = []
@@ -213,14 +223,14 @@ def render(entries: list[dict[str, object]], source: Path) -> str:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
-<title>Target Wallets · $50k–$900k</title>
+<title>Target Wallets · {window}</title>
 <style>{CSS}</style>
 </head>
 <body>
 <main>
   <p class="eyebrow">wallet-analyzer</p>
   <h1>Target Wallets</h1>
-  <p class="subtitle">{len(entries)} unique wallets in the $50,000–$900,000 window · generated {generated}</p>
+  <p class="subtitle">{len(entries)} unique wallets in the {window} window · generated {generated}</p>
 
   <section class="stats">
     <div class="stat"><div class="value">{len(entries)}</div><div class="label">Unique wallets</div></div>
@@ -228,6 +238,8 @@ def render(entries: list[dict[str, object]], source: Path) -> str:
     <div class="stat"><div class="value">{partial}</div><div class="label">Partial</div></div>
     <div class="stat"><div class="value">{eth_legs}</div><div class="label">Ethereum legs</div></div>
     <div class="stat"><div class="value">{bsc_legs}</div><div class="label">BSC legs</div></div>
+    <div class="stat"><div class="value">{btc_legs}</div><div class="label">Bitcoin legs</div></div>
+    <div class="stat"><div class="value">{sol_legs}</div><div class="label">Solana legs</div></div>
   </section>
 
   <section class="table-wrap">
@@ -249,10 +261,12 @@ def render(entries: list[dict[str, object]], source: Path) -> str:
   </section>
 
   <footer>
-    Sorted by Best Total USD, highest first. Addresses link to Etherscan or BscScan
-    according to the networks that matched.<br>
+    Sorted by Best Total USD, highest first. Addresses link to Etherscan, BscScan,
+    Blockchain.com or Solscan according to the networks that matched.<br>
     Best Total USD is native coin plus BEP-20 allowlist value — not the stablecoin
     balance of the token whose holder list surfaced the wallet.<br>
+    Bitcoin and Solana wallets come from the curated seed list in
+    <code>data/btc_sol_holders.csv</code>, not a live rich list.<br>
     Source: <code>{html.escape(str(source))}</code>
   </footer>
 </main>
@@ -265,11 +279,24 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT, help="master CSV")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="HTML output")
+    parser.add_argument(
+        "--min-usd", type=Decimal, default=Decimal("50000"), help="lower bound label (default 50000)"
+    )
+    parser.add_argument(
+        "--max-usd",
+        type=Decimal,
+        default=Decimal("10000000"),
+        help="upper bound label (default 10000000)",
+    )
     args = parser.parse_args()
 
     entries = load_entries(args.input)
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(render(entries, args.input), encoding="utf-8", newline="\n")
+    args.output.write_text(
+        render(entries, args.input, args.min_usd, args.max_usd),
+        encoding="utf-8",
+        newline="\n",
+    )
 
     print(f"wallets: {len(entries)}")
     print(f"written: {args.output}")

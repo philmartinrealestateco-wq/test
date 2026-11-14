@@ -78,6 +78,47 @@ def test_bitcoin_requests_only_one_transaction() -> None:
     assert client.get_calls[0]["params"] == {"limit": 1}
 
 
+def test_bitcoin_falls_back_to_blockstream() -> None:
+    def handler(url, params):
+        if "blockchain.info" in url:
+            raise ProviderError("blockchain.info unavailable after 4 attempts (HTTP 429)")
+        if url.endswith("/txs"):
+            return [{"status": {"confirmed": True, "block_time": 1794379036}}]
+        return {
+            "chain_stats": {
+                "funded_txo_sum": 15701008336931,
+                "spent_txo_sum": 0,
+                "tx_count": 356,
+            },
+            "mempool_stats": {"funded_txo_sum": 0, "spent_txo_sum": 0, "tx_count": 0},
+        }
+
+    result = BitcoinProvider(FakeClient(get_handler=handler)).fetch(BTC)
+
+    assert result.balance == Decimal("157010.08336931")
+    assert result.tx_count == 356
+    assert result.activity_verified
+    assert result.last_tx_at == datetime.fromtimestamp(1794379036, tz=timezone.utc)
+    assert "blockstream.info" in result.balance_source
+
+
+def test_bitcoin_fallback_without_transactions_is_inactive() -> None:
+    def handler(url, params):
+        if "blockchain.info" in url:
+            raise ProviderError("HTTP 429")
+        assert not url.endswith("/txs")
+        return {
+            "chain_stats": {"funded_txo_sum": 0, "spent_txo_sum": 0, "tx_count": 0},
+            "mempool_stats": {"funded_txo_sum": 0, "spent_txo_sum": 0, "tx_count": 0},
+        }
+
+    result = BitcoinProvider(FakeClient(get_handler=handler)).fetch(BTC)
+
+    assert result.balance == Decimal(0)
+    assert result.last_tx_at is None
+    assert result.activity_verified
+
+
 # -- Etherscan V2 --------------------------------------------------------
 
 

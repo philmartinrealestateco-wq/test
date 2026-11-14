@@ -109,6 +109,20 @@ def test_persistent_429_exhausts_attempts_with_status() -> None:
     assert session.attempts == 4
 
 
+def test_hours_long_retry_after_fails_fast_without_sleeping(slept) -> None:
+    client, session = client_with(
+        [FakeResponse(429, headers={"Retry-After": "85781"})]
+    )
+
+    with pytest.raises(ProviderError, match="unavailable for 85781s") as excinfo:
+        client.get_json("https://api.example/address/x", host=HOST)
+
+    assert excinfo.value.status == 429
+    assert session.attempts == 1
+    # Only the shared rate limiter may sleep; no 20s backoff is taken.
+    assert all(delay < 20 for delay in slept)
+
+
 def test_http_200_rate_limit_body_is_retried(slept) -> None:
     limited = {
         "status": "0",

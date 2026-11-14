@@ -130,7 +130,11 @@ def snapshot_matches(symbol: str, before: int) -> tuple[int, Path]:
     return len(rows), path
 
 
-def aggregate(paths: list[tuple[str, Path]]) -> list[dict[str, object]]:
+def aggregate(
+    paths: list[tuple[str, Path]],
+    minimum: Decimal = MIN_USD,
+    maximum: Decimal = MAX_USD,
+) -> list[dict[str, object]]:
     merged: dict[str, dict[str, object]] = {}
 
     for symbol, path in paths:
@@ -139,7 +143,7 @@ def aggregate(paths: list[tuple[str, Path]]) -> list[dict[str, object]]:
                 total = Decimal(row["Total USD"])
             except (KeyError, InvalidOperation):
                 continue
-            if not MIN_USD <= total <= MAX_USD:
+            if not minimum <= total <= maximum:
                 continue
 
             key = row["Wallet"].lower()
@@ -195,6 +199,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--limit", type=int, default=1000, help="holders per token (default 1000)"
     )
     parser.add_argument(
+        "--min-usd", type=Decimal, default=MIN_USD, help="lower bound (default 50000)"
+    )
+    parser.add_argument(
+        "--max-usd", type=Decimal, default=MAX_USD, help="upper bound (default 900000)"
+    )
+    parser.add_argument(
         "--aggregate-only",
         action="store_true",
         help="skip fetching/scanning and rebuild master_targets.csv from out/batch",
@@ -208,6 +218,8 @@ def main() -> int:
 
     if args.limit < 1:
         parser.error("--limit must be at least 1")
+    if args.min_usd >= args.max_usd:
+        parser.error("--min-usd must be lower than --max-usd")
 
     paths: list[tuple[str, Path]] = []
     failures: list[str] = []
@@ -245,7 +257,7 @@ def main() -> int:
             paths.append((spec.symbol, match_path))
             print(f"  matches: {count} -> {match_path}")
 
-    entries = aggregate(paths)
+    entries = aggregate(paths, args.min_usd, args.max_usd)
     write_master(entries)
     print(f"master: {MASTER} ({len(entries)} unique wallet(s))")
 
