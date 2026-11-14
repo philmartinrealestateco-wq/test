@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import importlib.util
+import inspect
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -74,6 +75,17 @@ def test_holders_csv_maps_each_row_to_its_network(tmp_path):
 
     assert [entry.network for entry in parsed.entries] == [Network.BITCOIN, Network.SOLANA]
     assert parsed.warnings == []
+
+
+def test_pipeline_defaults_match_the_standard_window():
+    pipeline = _load("run_pipeline", "run_pipeline.py")
+    args = pipeline.build_parser().parse_args([])
+    assert args.min_usd == Decimal("50000")
+    assert args.max_usd == Decimal("900000")
+
+    report = _load("generate_report", "generate_report.py")
+    default_max = inspect.signature(report.render).parameters["maximum"].default
+    assert default_max == Decimal("900000")
 
 
 def test_report_links_bitcoin_and_solana_plus_the_window():

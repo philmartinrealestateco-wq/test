@@ -101,7 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--min-usd", type=Decimal, default=Decimal("50000"), help="lower bound"
     )
     parser.add_argument(
-        "--max-usd", type=Decimal, default=Decimal("10000000"), help="upper bound"
+        "--max-usd", type=Decimal, default=Decimal("900000"), help="upper bound"
     )
     parser.add_argument(
         "--reuse-evm",

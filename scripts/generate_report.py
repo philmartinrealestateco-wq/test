@@ -179,7 +179,7 @@ def render(
     entries: list[dict[str, object]],
     source: Path,
     minimum: Decimal = Decimal("50000"),
-    maximum: Decimal = Decimal("10000000"),
+    maximum: Decimal = Decimal("900000"),
 ) -> str:
     window = f"${minimum:,.0f}–${maximum:,.0f}"
     verified = sum(1 for entry in entries if entry["status"] == "VERIFIED")
@@ -285,8 +285,8 @@ def main() -> int:
     parser.add_argument(
         "--max-usd",
         type=Decimal,
-        default=Decimal("10000000"),
-        help="upper bound label (default 10000000)",
+        default=Decimal("900000"),
+        help="upper bound label (default 900000)",
     )
     args = parser.parse_args()
 
