@@ -145,6 +145,18 @@ def normalise_handle(value: str) -> str:
     return handle.lstrip("@")
 
 
+def filter_by_handle(handle: str, hits: list[tuple[str, str]]) -> tuple[list[tuple[str, str]], int]:
+    """Drop hits whose profile URL does not carry the handle.
+
+    sherlock treats any 200 as a hit, so site roots such as
+    ``https://discord.com`` come back as false positives; a real profile URL
+    always contains the username.
+    """
+    needle = handle.lower()
+    kept = [(site, url) for site, url in hits if needle in url.lower()]
+    return kept, len(hits) - len(kept)
+
+
 def load_pivots(db) -> list[Pivot]:
     rows = db.execute(
         """
@@ -167,12 +179,17 @@ def load_pivots(db) -> list[Pivot]:
     return pivots
 
 
-def process_pivot(db, pivot: Pivot, timeout: int) -> tuple[int, int]:
-    """Run every available tool for one wallet. Returns (new rows, errors)."""
+def process_pivot(db, pivot: Pivot, timeout: int) -> tuple[int, int, int]:
+    """Run every available tool for one wallet.
+
+    Returns ``(findings stored, errors, warnings)`` - a warning is a recorded
+    provider limitation such as holehe's IP rate limit.
+    """
     label = pivot.ens_name or pivot.address
     print(f"{pivot.address}  ({label})")
     stored = 0
     errors = 0
+    warned = 0
 
     if pivot.twitter:
         print(f"  sherlock : {pivot.twitter}  (limit {timeout}s)")
@@ -182,7 +199,9 @@ def process_pivot(db, pivot: Pivot, timeout: int) -> tuple[int, int]:
             timeout,
         )
         found = parse_sherlock(run.output)
+        found, dropped = filter_by_handle(pivot.twitter, found)
         state = "timed out, partial" if run.timed_out else f"exit {run.returncode}"
+        dropped_note = f"; dropped {dropped} hit(s) without the handle in the URL" if dropped else ""
 
         if run.error and not found:
             errors += 1
@@ -191,7 +210,7 @@ def process_pivot(db, pivot: Pivot, timeout: int) -> tuple[int, int]:
             errors += 1
             print(f"  sherlock : ERROR — exit {run.returncode} with nothing to parse")
         elif not found:
-            print(f"  sherlock : no accounts found ({state})")
+            print(f"  sherlock : no accounts found ({state}{dropped_note})")
         else:
             store_findings(
                 db,
@@ -202,7 +221,7 @@ def process_pivot(db, pivot: Pivot, timeout: int) -> tuple[int, int]:
             )
             db.commit()
             stored += len(found)
-            print(f"  sherlock : {len(found)} account(s) ({state})")
+            print(f"  sherlock : {len(found)} account(s) ({state}{dropped_note})")
             for site, url in found:
                 print(f"             * {site}: {url}")
 
@@ -240,10 +259,21 @@ def process_pivot(db, pivot: Pivot, timeout: int) -> tuple[int, int]:
                 for site in report.used:
                     print(f"             * {site}")
             elif blocked:
-                errors += 1
+                # A throttled provider is a fact about the run, not a failed
+                # wallet: record it as an ERROR row so it stays visible in the
+                # report without aborting the remaining pivots.
+                store_findings(
+                    db,
+                    pivot.address,
+                    "Holehe",
+                    [("IP Rate Limited", None)],
+                    "ERROR",
+                )
+                db.commit()
+                warned += 1
                 print(
-                    f"  holehe   : ERROR — {blocked} of {report.checked} sites rate-limited, "
-                    "absence not verified"
+                    f"  holehe   : WARNING — {blocked} of {report.checked} sites rate-limited; "
+                    "logged to the database, absence not verified"
                 )
             else:
                 print(f"  holehe   : no accounts ({len(report.not_used)} of {report.checked} sites clear)")
@@ -251,7 +281,7 @@ def process_pivot(db, pivot: Pivot, timeout: int) -> tuple[int, int]:
     if not pivot.twitter and not pivot.email:
         print("  nothing to run: no handle or email")
 
-    return stored, errors
+    return stored, errors, warned
 
 
 def seed_test_pivot(db) -> Pivot:
@@ -286,15 +316,19 @@ def run(limit: int | None = None, timeout: int = DEFAULT_TIMEOUT, test: bool = F
         if limit is not None:
             pivots = pivots[:limit]
 
-        total = errors = 0
+        total = errors = warned = 0
         for index, pivot in enumerate(pivots, start=1):
             print(f"[{index}/{len(pivots)}] ", end="")
-            stored, pivot_errors = process_pivot(db, pivot, timeout)
+            stored, pivot_errors, pivot_warnings = process_pivot(db, pivot, timeout)
             total += stored
             errors += pivot_errors
+            warned += pivot_warnings
             print()
 
-        print(f"summary: {len(pivots)} pivot(s) · {total} finding(s) stored · errors {errors}")
+        print(
+            f"summary: {len(pivots)} pivot(s) · {total} finding(s) stored · "
+            f"warnings {warned} · errors {errors}"
+        )
         print(f"database: {DB_PATH}")
         return 0 if not errors else 1
     finally:

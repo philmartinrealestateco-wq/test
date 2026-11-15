@@ -1,0 +1,234 @@
+"""Phase 4: render one wallet's intel into a styled PDF report.
+
+Draws everything from ``intel.db``: the ENS cache, the web mentions collected in
+Phase 2 and the sherlock/holehe results from Phase 3. The Markdown is the source
+of truth, converted to HTML with ``markdown`` and printed with ``xhtml2pdf``.
+"""
+
+from __future__ import annotations
+
+import argparse
+from datetime import datetime, timezone
+from pathlib import Path
+
+import markdown
+from pypdf import PdfReader
+from xhtml2pdf import pisa
+
+from database import DB_PATH, init_db
+
+REPORTS_DIR = Path(__file__).resolve().parent / "reports"
+DEFAULT_ADDRESS = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+DEFAULT_OUTPUT = REPORTS_DIR / "vitalik_test.pdf"
+
+STYLE = """
+@page {
+    size: A4;
+    margin: 1.7cm 1.5cm 1.9cm 1.5cm;
+    @bottom-right { content: "Page " counter(page) " of " counter(pages); font-size: 8pt; color: #8a949e; }
+    @bottom-left { content: "intel_engine"; font-size: 8pt; color: #8a949e; }
+}
+body { font-family: Helvetica, Arial, sans-serif; font-size: 9.5pt; color: #1f2328; line-height: 1.45; }
+h1 { font-size: 19pt; color: #0b3d5c; margin: 0 0 2pt 0; }
+h2 { font-size: 12.5pt; color: #0b3d5c; border-bottom: 1pt solid #cfe0ec; padding-bottom: 3pt; margin-top: 16pt; }
+p { margin: 4pt 0; }
+table { width: 100%; margin: 5pt 0 9pt 0; }
+th { background-color: #0b3d5c; color: #ffffff; text-align: left; padding: 4pt 5pt; font-size: 8.5pt; }
+td { border-bottom: 0.5pt solid #d8dee4; padding: 3.5pt 5pt; vertical-align: top; }
+code { font-family: Courier, monospace; font-size: 8.5pt; color: #0b3d5c; }
+.meta { color: #57606a; font-size: 9pt; }
+.lede { color: #57606a; font-size: 9pt; margin-bottom: 8pt; }
+"""
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def cell(value: object) -> str:
+    """Escape a Markdown table cell."""
+    if value is None or value == "":
+        return "&mdash;"
+    return str(value).replace("|", "\\|").replace("\n", " ")
+
+
+def load_wallet(db, address: str):
+    return db.execute(
+        "SELECT address, ens_name, ens_twitter, ens_email, last_scanned FROM wallets WHERE lower(address) = ?",
+        (address.lower(),),
+    ).fetchone()
+
+
+def load_findings(db, address: str, tool: str) -> list:
+    return db.execute(
+        """
+        SELECT finding, url, confidence, timestamp
+        FROM osint_findings
+        WHERE lower(address) = ? AND tool = ?
+        ORDER BY finding
+        """,
+        (address.lower(), tool),
+    ).fetchall()
+
+
+def build_markdown(db, address: str) -> str:
+    wallet = load_wallet(db, address)
+    if wallet is None:
+        raise SystemExit(f"error: {address} is not in {DB_PATH}; run the scraper first")
+
+    web = load_findings(db, address, "DuckDuckGo")
+    sherlock = load_findings(db, address, "Sherlock")
+    holehe = load_findings(db, address, "Holehe")
+    ens_records = load_findings(db, address, "ENS")
+
+    ens_url = next((row["url"] for row in ens_records if row["url"]), None)
+    holehe_blocked = any(row["confidence"] == "ERROR" for row in holehe)
+    subject = wallet["ens_name"] or wallet["address"]
+
+    lines: list[str] = [
+        "# OSINT Target Report",
+        "",
+        f'<p class="lede">Off-chain exposure review for <code>{wallet["address"]}</code> '
+        f'({subject}). Every value below comes from <code>intel.db</code>; nothing was '
+        "re-verified for this document.</p>",
+        "",
+        f'<p class="meta">Generated {utc_now()} &middot; sources: ENS, DuckDuckGo, sherlock, holehe</p>',
+        "",
+        "## Target Overview",
+        "",
+        "| Field | Value |",
+        "| --- | --- |",
+        f"| Address | `{wallet['address']}` |",
+        f"| ENS name | {cell(wallet['ens_name'])} |",
+        f"| Twitter (ENS) | {cell('@' + wallet['ens_twitter'] if wallet['ens_twitter'] else None)} |",
+        f"| Email (ENS) | {cell(wallet['ens_email'])} |",
+        f"| Published URL (ENS) | {cell(ens_url)} |",
+        f"| Last scanned | {cell(wallet['last_scanned'])} |",
+        f"| Web mentions stored | {len(web)} |",
+        f"| Sherlock accounts stored | {len(sherlock)} |",
+        f"| Holehe rows stored | {len(holehe)} |",
+        "",
+    ]
+
+    lines += ["## Web Mentions", ""]
+    if web:
+        lines += ["| Title | URL | Confidence |", "| --- | --- | --- |"]
+        for row in web:
+            url = row["url"] or ""
+            link = f"[{cell(url)}]({url})" if url else "&mdash;"
+            lines.append(f"| {cell(row['finding'])} | {link} | {cell(row['confidence'])} |")
+        lines.append("")
+        lines.append(
+            "<p class=\"lede\">Only results whose title, snippet or URL actually "
+            "contained the address are listed; unrelated DuckDuckGo filler was discarded.</p>"
+        )
+    else:
+        lines += ["_No web mentions recorded for this address._", ""]
+
+    lines += ["## Sherlock Findings", ""]
+    if sherlock:
+        lines += ["| Platform | Profile URL | Confidence |", "| --- | --- | --- |"]
+        for row in sherlock:
+            url = row["url"] or ""
+            link = f"[{cell(url)}]({url})" if url else "&mdash;"
+            platform = row["finding"].removeprefix("Account on ")
+            lines.append(f"| {cell(platform)} | {link} | {cell(row['confidence'])} |")
+        lines.append("")
+        lines += [
+            f"<p class=\"lede\">{len(sherlock)} registration(s). Hits whose profile URL did "
+            "not contain the handle were discarded as false positives.</p>",
+            "",
+        ]
+    else:
+        lines += ["_No sherlock findings recorded._", ""]
+
+    lines += ["## Unresolved Questions", ""]
+    questions: list[str] = []
+
+    if wallet["ens_twitter"]:
+        questions.append(
+            f"The handle `@{wallet['ens_twitter']}` is a **self-asserted** ENS text record - "
+            "anyone can set one. Ownership needs out-of-band proof (a signed message or the "
+            "ENS transaction history)."
+        )
+    if wallet["ens_email"]:
+        questions.append(
+            f"The email `{wallet['ens_email']}` is likewise self-asserted; it is not proof of "
+            "control."
+        )
+    else:
+        questions.append(
+            "No email pivot exists: the ENS record publishes no `email` text record, so holehe "
+            "had nothing to enumerate."
+        )
+    if holehe_blocked:
+        questions.append(
+            "The email enumeration was rate-limited from this host (`IP Rate Limited`), so email "
+            "exposure is **unknown**, not absent."
+        )
+    if sherlock:
+        questions.append(
+            f"None of the {len(sherlock)} sherlock registrations is cryptographically tied to this "
+            "address - a username collision is more likely than one person controlling all of them."
+        )
+    if web:
+        questions.append(
+            "Web mentions are unverified search results: they establish that the address appears "
+            "online, not who controls it."
+        )
+    questions.append(
+        "On-chain history (funding source, counterparties) was not reviewed here and is the "
+        "next step for attribution."
+    )
+
+    lines += [f"- {question}" for question in questions]
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def render_pdf(markdown_text: str, output_path: Path) -> Path:
+    body = markdown.markdown(markdown_text, extensions=["tables", "sane_lists"])
+    document = (
+        "<html><head><meta charset=\"utf-8\" />"
+        f"<style>{STYLE}</style></head><body>{body}</body></html>"
+    )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("wb") as handle:
+        status = pisa.CreatePDF(document, dest=handle, encoding="utf-8")
+
+    if status.err:
+        raise RuntimeError(f"xhtml2pdf reported {status.err} error(s); {output_path} is unusable")
+
+    return output_path
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--address", default=DEFAULT_ADDRESS, help="wallet to report on")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=DEFAULT_OUTPUT,
+        help=f"PDF destination (default {DEFAULT_OUTPUT})",
+    )
+    args = parser.parse_args(argv)
+
+    db = init_db()
+    try:
+        markdown_text = build_markdown(db, args.address)
+    finally:
+        db.close()
+
+    pdf = render_pdf(markdown_text, Path(args.output))
+    pages = len(PdfReader(str(pdf)).pages)
+    print(f"pdf     : {pdf}")
+    print(f"size    : {pdf.stat().st_size:,} bytes")
+    print(f"pages   : {pages}")
+    print(f"database: {DB_PATH}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
