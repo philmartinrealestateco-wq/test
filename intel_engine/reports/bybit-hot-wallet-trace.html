@@ -1,0 +1,263 @@
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel-2: #1c2128;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --warn: #f0883e;
+    --bad: #f85149;
+    --good: #3fb950;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 32px 20px 64px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.55;
+    font-size: 15px;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  h1 { font-size: 1.6rem; margin: 0 0 6px; letter-spacing: -0.02em; }
+  h2 { font-size: 1.05rem; margin: 32px 0 10px; color: #e6edf3; }
+  .sub { color: var(--muted); font-size: 0.92rem; margin: 0 0 22px; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .verdict {
+    border: 1px solid #6e2c2c;
+    border-left: 4px solid var(--bad);
+    background: #2a1416;
+    border-radius: 8px;
+    padding: 16px 18px;
+    margin-bottom: 8px;
+  }
+  .verdict .tag {
+    display: inline-block;
+    font-size: 0.72rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--bad);
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+  .verdict p { margin: 6px 0 0; }
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .card .k { color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; }
+  .card .v { font-size: 1.15rem; margin-top: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .card .h { color: var(--muted); font-size: 0.8rem; margin-top: 4px; }
+  table { width: 100%; border-collapse: collapse; margin: 6px 0 4px; font-size: 0.9rem; }
+  th {
+    text-align: left;
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    border-bottom: 1px solid var(--border);
+    padding: 8px 10px;
+  }
+  td { border-bottom: 1px solid #21262d; padding: 9px 10px; vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  .scroll { overflow-x: auto; }
+  .chip {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .chip.ok { color: var(--good); border-color: #2b5c33; }
+  .chip.warn { color: var(--warn); border-color: #6b4a22; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .chain { list-style: none; padding: 0; margin: 0; }
+  .chain li {
+    position: relative;
+    padding: 0 0 22px 26px;
+    border-left: 2px solid var(--border);
+    margin-left: 6px;
+  }
+  .chain li:last-child { border-left: 2px solid transparent; padding-bottom: 0; }
+  .chain li::before {
+    content: "";
+    position: absolute;
+    left: -7px;
+    top: 4px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid var(--bg);
+  }
+  .chain li.hot::before { background: var(--bad); }
+  .chain .who { font-weight: 600; color: #e6edf3; }
+  .chain .what { color: var(--muted); font-size: 0.9rem; }
+  .note {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    color: var(--muted);
+    font-size: 0.88rem;
+  }
+  .note strong { color: var(--text); }
+  ul.plain { margin: 6px 0 0; padding-left: 20px; }
+  ul.plain li { margin: 4px 0; }
+  .foot { margin-top: 34px; color: #6e7681; font-size: 0.8rem; border-top: 1px solid var(--border); padding-top: 14px; }
+</style>
+
+<div class="wrap">
+  <h1>Funding trace — ByBit: Hot Wallet 5</h1>
+  <p class="sub">
+    <span class="mono">0x18E296053CbDF986196903e889b7DcA7A73882F6</span> ·
+    traced 2026-11-15 · Etherscan v2 (chainid 1) + public Ethereum RPC
+  </p>
+
+  <div class="verdict">
+    <span class="tag">Not a private holder</span>
+    <p>
+      This address is a <strong>Bybit exchange hot wallet</strong>. It was created in June 2025 and seeded with
+      roughly <strong>300 million USDT</strong> by Bybit's primary hot wallet
+      (<span class="mono">0xf89d…5EaA40</span>) inside a single week. The ~$75k balance our scanner saw is
+      transient exchange working capital, not a person's portfolio — so the $50k–$900k target-list entry is a
+      false positive, and no personal OSINT pivot exists behind it.
+    </p>
+  </div>
+
+  <h2>What the address is, today</h2>
+  <div class="grid">
+    <div class="card">
+      <div class="k">Code</div>
+      <div class="v">0 bytes</div>
+      <div class="h">EOA, not a contract</div>
+    </div>
+    <div class="card">
+      <div class="k">ETH balance</div>
+      <div class="v">39.0263</div>
+      <div class="h">≈ working gas float</div>
+    </div>
+    <div class="card">
+      <div class="k">USDT balance</div>
+      <div class="v">55,218,371.85</div>
+      <div class="h">holds 55.2M today, $75k at scan time</div>
+    </div>
+    <div class="card">
+      <div class="k">Outgoing nonce</div>
+      <div class="v">1,418,258</div>
+      <div class="h">1.4M outgoing txs</div>
+    </div>
+  </div>
+
+  <h2>Funding chain</h2>
+  <ul class="chain">
+    <li class="hot">
+      <div class="who"><a href="https://etherscan.io/address/0x18E296053CbDF986196903e889b7DcA7A73882F6" target="_blank" rel="noopener">0x18E2…F82F6</a>
+        <span class="chip warn">ByBit: Hot Wallet 5 · Etherscan label</span></div>
+      <div class="what">
+        First ever transaction <strong>2025-06-17 08:56 UTC</strong> (block 22723173): 0.1 ETH in from the
+        funder below. Receives 300M+ USDT within four weeks of birth.
+      </div>
+    </li>
+    <li>
+      <div class="who"><a href="https://etherscan.io/address/0xf89d7b9c864f589bbF53a82105107622B35EaA40" target="_blank" rel="noopener">0xf89d…5EaA40</a>
+        <span class="chip warn">Bybit: Hot Wallet · Etherscan</span>
+        <span class="chip warn">Bybit: Hot Wallet · Arkham</span></div>
+      <div class="what">
+        The direct funder. EOA, 1,739.90 ETH, 35,399,798.94 USDT, nonce <strong>7,378,167</strong> — one of the
+        busiest addresses on Ethereum. Alive since <strong>2021-08-06 10:12 UTC</strong> (block 12970812).
+      </div>
+    </li>
+    <li>
+      <div class="who"><a href="https://etherscan.io/address/0x9696f59e4d72e237be84ffd425dcad154bf96976" target="_blank" rel="noopener">0x9696…6976</a>
+        <span class="chip">no label found</span></div>
+      <div class="what">
+        Repeated early funder of the wallet above in August 2021 (0.0515, 0.024 ETH). EOA with nonce
+        <strong>10,281,693</strong> — exchange-scale traffic, consistent with another Bybit operational wallet.
+      </div>
+    </li>
+    <li>
+      <div class="who"><a href="https://etherscan.io/address/0x20c25b28202385e4d40e6b89e9094fec9ad4ed7e" target="_blank" rel="noopener">0x20c2…ED7E</a>
+        <span class="chip">no label found</span></div>
+      <div class="what">
+        Sent the very first 0.03 ETH to <span class="mono">0xf89d…5EaA40</span> on 2021-08-06. EOA with nonce
+        <strong>22</strong> — a low-activity operator wallet, likely treasury/bootstrapping.
+      </div>
+    </li>
+  </ul>
+
+  <h2>Transfers from the funder</h2>
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr><th>Block</th><th>When (UTC)</th><th class="num">Amount</th><th>Asset</th><th>Tx</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>22723173</td><td>2025-06-17 08:56</td><td class="num">0.100000</td><td>ETH</td>
+          <td><a href="https://etherscan.io/tx/0xa02c0d36fe1a7ced" target="_blank" rel="noopener" class="mono">0xa02c0d…</a></td></tr>
+        <tr><td>22844524</td><td>2025-07-04 08:00</td><td class="num">1.000000</td><td>USDT</td>
+          <td><a href="https://etherscan.io/address/0x18E296053CbDF986196903e889b7DcA7A73882F6" target="_blank" rel="noopener" class="mono">see address</a></td></tr>
+        <tr><td>22887315</td><td>2025-07-10 07:34</td><td class="num">145,047,952.000000</td><td>USDT</td>
+          <td><a href="https://etherscan.io/tx/0x4abce682cd869d87" target="_blank" rel="noopener" class="mono">0x4abce6…</a></td></tr>
+        <tr><td>22887488</td><td>2025-07-10 08:33</td><td class="num">147,238,327.891220</td><td>USDT</td><td class="mono">—</td></tr>
+        <tr><td>22887564</td><td>2025-07-10 09:11</td><td class="num">1.300000</td><td>ETH</td><td class="mono">—</td></tr>
+        <tr><td>22887639</td><td>2025-07-10</td><td class="num">1,015,719.814765</td><td>USDT</td><td class="mono">—</td></tr>
+        <tr><td>22887791</td><td>2025-07-10</td><td class="num">897,912.678899</td><td>USDT</td><td class="mono">—</td></tr>
+        <tr><td>22888397</td><td>2025-07-10 11:11</td><td class="num">5,881,351.630000</td><td>USDT</td><td class="mono">—</td></tr>
+        <tr><td>22888773</td><td>2025-07-10 12:26</td><td class="num">1.300000</td><td>ETH</td><td class="mono">—</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="sub" style="margin-top:10px">
+    Six USDT transfers (1.0 + 145,047,952.0 + 147,238,327.89 + 1,015,719.81 + 897,912.68 + 5,881,351.63) =
+    <strong>≥ 300,081,265.01 USDT</strong>; three ETH transfers = 2.700000 ETH. All within four weeks of the
+    wallet's creation.
+  </p>
+
+  <h2>Why it appeared in our target list</h2>
+  <div class="note">
+    <p style="margin-top:0">
+      <span class="mono">out/master_targets.csv</span> holds this address at
+      <strong>$74,989.45 VERIFIED</strong> (USDT leg, Ethereum) — inside the $50k–$900k window.
+    </p>
+    <p style="margin-bottom:0">
+      But the same address holds <strong>55.2M USDT today</strong>. Exchange hot wallets sweep customer deposits
+      in and out continuously, so their spot balance crosses any fixed band briefly. The scan captured a
+      low-balance moment and read it as a private holding. A value window cannot distinguish an individual
+      from exchange working capital — that requires the label and the funding pattern, which is what this
+      trace adds.
+    </p>
+  </div>
+
+  <h2>Method and limits</h2>
+  <div class="note">
+    <ul class="plain">
+      <li><strong>Sources:</strong> Etherscan v2 <span class="mono">txlist</span> / <span class="mono">tokentx</span>
+        (chainid 1, ascending) for indexing, publicnode JSON-RPC for code, balances, nonces and block timestamps,
+        and DuckDuckGo for the third-party labels.</li>
+      <li><strong>Labels are third-party claims</strong> (Etherscan, Arkham), not proof — though the 300M USDT seed
+        from a labelled Bybit wallet and 7.4M outgoing transactions corroborate the exchange reading.</li>
+      <li><strong>Totals are a lower bound:</strong> the free Etherscan tier caps a page at 1,000 rows, and this
+        wallet has 1.4M outgoing transactions, so any funding after the first 1,000 rows is not counted here.</li>
+      <li><strong>Depth:</strong> two hops back. <span class="mono">0x9696…6976</span> and
+        <span class="mono">0x20c2…ED7E</span> were not traced further; both are EOAs, so a contract-deployment
+        signature is not available to attribute them.</li>
+      <li><strong>Balances are point-in-time</strong> (2026-11-15) and move constantly for a hot wallet.</li>
+    </ul>
+  </div>
+
+  <p class="foot">
+    intel_engine trace · generated 2026-11-15 · address labels via Etherscan/Arkham · not financial advice
+  </p>
+</div>
