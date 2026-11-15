@@ -2,4 +2,3 @@
 .venv/
 intel.db
 __pycache__/
-batch_osint.log
