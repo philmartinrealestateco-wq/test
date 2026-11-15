@@ -98,6 +98,54 @@ def test_scanned_contracts_cover_the_pipeline_tokens():
     assert addresses <= set(scanner.SCANNED_TOKENS)
 
 
+def test_load_exchange_labels_reads_the_registry(tmp_path):
+    module = _load("batch_scan_tokens", "batch_scan_tokens.py")
+    path = tmp_path / "exchange_wallets.csv"
+    path.write_text(
+        "address,label,source\n"
+        "0x18E296053CbDF986196903e889b7DcA7A73882F6,ByBit Hot Wallet 5,trace\n"
+        "not-an-address,Ignored,-\n"
+        "0xf89d7b9c864f589bbF53a82105107622B35EaA40,,\n",
+        encoding="utf-8",
+    )
+
+    labels = module.load_exchange_labels(path)
+
+    assert labels == {
+        "0x18e296053cbdf986196903e889b7dca7a73882f6": "ByBit Hot Wallet 5",
+        "0xf89d7b9c864f589bbf53a82105107622b35eaa40": "exchange",
+    }
+
+
+def test_load_exchange_labels_tolerates_a_missing_registry(tmp_path):
+    module = _load("batch_scan_tokens", "batch_scan_tokens.py")
+
+    assert module.load_exchange_labels(tmp_path / "absent.csv") == {}
+
+
+def test_drop_exchange_wallets_removes_labelled_addresses():
+    module = _load("batch_scan_tokens", "batch_scan_tokens.py")
+    entries = [
+        {"wallet": "0x18E296053CbDF986196903e889b7DcA7A73882F6", "total": Decimal("74989")},
+        {"wallet": "0xAAA0000000000000000000000000000000000001", "total": Decimal("50000")},
+    ]
+
+    kept, dropped = module.drop_exchange_wallets(
+        entries, {"0x18e296053cbdf986196903e889b7dca7a73882f6": "ByBit Hot Wallet 5"}
+    )
+
+    assert [entry["wallet"] for entry in kept] == ["0xAAA0000000000000000000000000000000000001"]
+    assert dropped == [("0x18E296053CbDF986196903e889b7DcA7A73882F6", "ByBit Hot Wallet 5")]
+
+
+def test_exchange_registry_contains_the_traced_bybit_wallets():
+    module = _load("batch_scan_tokens", "batch_scan_tokens.py")
+
+    labels = module.load_exchange_labels()
+    assert "0x18e296053cbdf986196903e889b7dca7a73882f6" in labels
+    assert "0xf89d7b9c864f589bbf53a82105107622b35eaa40" in labels
+
+
 def test_scanned_contracts_cover_the_bep20_allowlist():
     scanner = _load("batch_scan_tokens", "batch_scan_tokens.py")
 

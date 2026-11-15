@@ -37,6 +37,7 @@ OUT_DIR = ROOT / "out"
 BATCH_DIR = OUT_DIR / "batch"
 REPORT_MATCHES = OUT_DIR / "report_matches.csv"
 MASTER = OUT_DIR / "master_targets.csv"
+EXCHANGE_REGISTRY = ROOT / "data" / "exchange_wallets.csv"
 
 REPORT_COLUMNS = ("Wallet", "Network", "Native USD", "Token USD", "Total USD", "Status")
 MASTER_COLUMNS = ("Wallet", "Tokens", "Networks", "Best Total USD", "Status")
@@ -202,6 +203,43 @@ def aggregate(
     return sorted(merged.values(), key=lambda entry: entry["total"], reverse=True)
 
 
+def load_exchange_labels(path: Path = EXCHANGE_REGISTRY) -> dict[str, str]:
+    """Curated exchange labels keyed by lowercase address.
+
+    No keyless label API exists (Blockscout returns no name, Etherscan exposes no
+    labels endpoint), so this registry is the label source: extend the CSV rather
+    than guessing.
+    """
+    if not path.exists():
+        return {}
+
+    labels: dict[str, str] = {}
+    with path.open(newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            address = (row.get("address") or "").strip().lower()
+            if not _ADDRESS.fullmatch(address):
+                continue
+            label = (row.get("label") or "").strip()
+            labels[address] = label or "exchange"
+    return labels
+
+
+def drop_exchange_wallets(
+    entries: list[dict[str, object]], labels: dict[str, str]
+) -> tuple[list[dict[str, object]], list[tuple[str, str]]]:
+    """Split entries into (kept, dropped) using the exchange registry."""
+    kept: list[dict[str, object]] = []
+    dropped: list[tuple[str, str]] = []
+    for entry in entries:
+        wallet = str(entry["wallet"])
+        label = labels.get(wallet.lower())
+        if label is None:
+            kept.append(entry)
+        else:
+            dropped.append((wallet, label))
+    return kept, dropped
+
+
 def write_master(entries: list[dict[str, object]]) -> None:
     MASTER.parent.mkdir(parents=True, exist_ok=True)
     with MASTER.open("w", encoding="utf-8", newline="") as handle:
@@ -321,6 +359,12 @@ def main() -> int:
     )
     if skipped:
         print(f"token contracts excluded: {', '.join(sorted(skipped))}")
+
+    entries, dropped = drop_exchange_wallets(entries, load_exchange_labels())
+    if dropped:
+        detail = ", ".join(f"{address} ({label})" for address, label in dropped)
+        print(f"exchange wallets excluded: {detail}")
+
     write_master(entries)
     print(f"master: {MASTER} ({len(entries)} unique wallet(s))")
 
