@@ -1,15 +1,18 @@
 """Entry point for the intel engine.
 
-Opens ``intel.db`` (creating the schema on first run) and then hands off to the
-on-chain enrichment pass.
+Runs the whole chain over ``out/master_targets.csv``: on-chain enrichment, then
+off-chain OSINT for whatever pivots that produced, then a PDF for every wallet
+that ended up with at least one finding.
 """
 
 from __future__ import annotations
 
 import sqlite3
 
+import onchain_scraper
+import osint_runner
+import report_generator
 from database import DB_PATH, init_db
-from onchain_scraper import run as run_onchain
 
 
 def main() -> int:
@@ -26,7 +29,32 @@ def main() -> int:
     finally:
         connection.close()
 
-    return run_onchain()
+    print("== phase 2: on-chain enrichment ==")
+    scrape_status = onchain_scraper.run(limit=None)
+    print()
+
+    print("== phase 3: off-chain OSINT ==")
+    pivot_status = osint_runner.run()
+    print()
+
+    print("== phase 4: reports ==")
+    db = init_db()
+    try:
+        with_findings = len(report_generator.wallets_with_findings(db))
+        total = db.execute("SELECT COUNT(*) FROM wallets").fetchone()[0]
+        generated, skipped = report_generator.run_batch(db)
+    finally:
+        db.close()
+
+    print()
+    print(
+        f"summary: {total} wallet(s) cached · {with_findings} with findings · "
+        f"{len(generated)} pdf generated · {skipped} skipped (no findings)"
+    )
+    print(f"database: {DB_PATH}")
+    print(f"reports : {report_generator.REPORTS_DIR}")
+
+    return 0 if not (scrape_status or pivot_status) else 1
 
 
 if __name__ == "__main__":

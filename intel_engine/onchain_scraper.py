@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import random
 import re
 import time
 from dataclasses import dataclass
@@ -29,8 +30,9 @@ ROOT = Path(__file__).resolve().parent.parent
 MASTER_CSV = ROOT / "out" / "master_targets.csv"
 
 DEFAULT_LIMIT = 5
+DEFAULT_DELAY = (10.0, 20.0)
+DDG_FAILURE_LIMIT = 5
 SEARCH_RESULTS = 3
-REQUEST_DELAY = 2.0
 SEARCH_DELAY = 1.0
 #: Keyword anchors, not operators: this DDG backend ignores both quotes and
 #: ``site:`` (measured 2026-11-15 - quoted and site-scoped queries returned 0
@@ -75,8 +77,8 @@ class SearchHit:
     url: str
 
 
-def read_targets(path: Path = MASTER_CSV, limit: int = DEFAULT_LIMIT) -> list[Target]:
-    """Return the first ``limit`` EVM wallets from the master CSV."""
+def read_targets(path: Path = MASTER_CSV, limit: int | None = DEFAULT_LIMIT) -> list[Target]:
+    """Return the first ``limit`` EVM wallets from the master CSV, or all of them."""
     if not path.exists():
         raise SystemExit(f"error: {path} not found; run scripts\\run_pipeline.py first")
 
@@ -94,7 +96,7 @@ def read_targets(path: Path = MASTER_CSV, limit: int = DEFAULT_LIMIT) -> list[Ta
                     status=(row.get("Status") or "").strip(),
                 )
             )
-            if len(targets) >= limit:
+            if limit is not None and len(targets) >= limit:
                 break
 
     return targets
@@ -236,14 +238,20 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def run(limit: int = DEFAULT_LIMIT, master: Path = MASTER_CSV) -> int:
+def run(
+    limit: int | None = DEFAULT_LIMIT,
+    master: Path = MASTER_CSV,
+    delay: tuple[float, float] | None = DEFAULT_DELAY,
+) -> int:
     targets = read_targets(master, limit)
     if not targets:
         print(f"error: no EVM wallets in {master}")
         return 1
 
     print(f"master : {master}")
-    print(f"targets: {len(targets)} highest-value wallet(s)")
+    print(f"targets: {len(targets)} wallet(s)")
+    if delay:
+        print(f"spacing: {delay[0]:.0f}-{delay[1]:.0f}s random between wallets")
 
     try:
         web3, endpoint = connect_rpc()
@@ -259,6 +267,8 @@ def run(limit: int = DEFAULT_LIMIT, master: Path = MASTER_CSV) -> int:
     total_hits = 0
     skipped = 0
     errors = 0
+    search_failures_in_a_row = 0
+    stopped_early = False
 
     try:
         for index, target in enumerate(targets, start=1):
@@ -322,13 +332,25 @@ def run(limit: int = DEFAULT_LIMIT, master: Path = MASTER_CSV) -> int:
             store_wallet(db, target.address, record, complete=not failures)
             db.commit()
 
+            search_failed = any(f.startswith("search ") for f in failures)
+            search_failures_in_a_row = search_failures_in_a_row + 1 if search_failed else 0
+
             if failures:
                 errors += 1
                 print("      cached   : partial — last_scanned stays NULL, will retry\n")
             else:
                 print("      cached   : yes\n")
 
-            time.sleep(REQUEST_DELAY)
+            if search_failures_in_a_row >= DDG_FAILURE_LIMIT:
+                stopped_early = True
+                print(
+                    f"stopping: DuckDuckGo failed for {search_failures_in_a_row} wallets in a row; "
+                    "the remaining wallets were not scanned\n"
+                )
+                break
+
+            if delay and index < len(targets):
+                time.sleep(random.uniform(*delay))
     finally:
         db.close()
 
@@ -336,6 +358,7 @@ def run(limit: int = DEFAULT_LIMIT, master: Path = MASTER_CSV) -> int:
         f"summary: {len(targets)} target(s) · ENS names {found_ens} · "
         f"search results {total_hits} corroborated · "
         f"skipped {skipped} · errors {errors}"
+        + (" · stopped early (DDG blocked)" if stopped_early else "")
     )
     print(f"database: {DB_PATH}")
     return 0 if not errors else 1

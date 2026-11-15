@@ -8,11 +8,11 @@ of truth, converted to HTML with ``markdown`` and printed with ``xhtml2pdf``.
 from __future__ import annotations
 
 import argparse
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 import markdown
-from pypdf import PdfReader
 from xhtml2pdf import pisa
 
 from database import DB_PATH, init_db
@@ -204,6 +204,45 @@ def render_pdf(markdown_text: str, output_path: Path) -> Path:
     return output_path
 
 
+def wallets_with_findings(db) -> list:
+    """Wallets worth a PDF: an ENS name, or any finding that is not an ERROR row."""
+    return db.execute(
+        """
+        SELECT w.address, w.ens_name
+        FROM wallets w
+        WHERE (w.ens_name IS NOT NULL AND TRIM(w.ens_name) <> '')
+           OR EXISTS (
+                SELECT 1 FROM osint_findings f
+                WHERE lower(f.address) = lower(w.address)
+                  AND (f.confidence IS NULL OR upper(f.confidence) <> 'ERROR')
+           )
+        ORDER BY lower(w.address)
+        """
+    ).fetchall()
+
+
+def report_name(address: str, ens_name: str | None) -> str:
+    """Human-friendly file stem: the ENS name when known, else the address."""
+    stem = (ens_name or address).strip().lower()
+    safe = re.sub(r"[^a-z0-9._-]+", "-", stem).strip("-.")
+    return f"{safe or address}.pdf"
+
+
+def run_batch(db, out_dir: Path = REPORTS_DIR) -> tuple[list[Path], int]:
+    """Render one PDF per wallet with a finding; return (files, skipped count)."""
+    eligible = wallets_with_findings(db)
+    total = db.execute("SELECT COUNT(*) FROM wallets").fetchone()[0]
+    generated: list[Path] = []
+
+    for index, row in enumerate(eligible, start=1):
+        markdown_text = build_markdown(db, row["address"])
+        pdf = render_pdf(markdown_text, Path(out_dir) / report_name(row["address"], row["ens_name"]))
+        generated.append(pdf)
+        print(f"[{index}/{len(eligible)}] pdf: {pdf}")
+
+    return generated, total - len(eligible)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--address", default=DEFAULT_ADDRESS, help="wallet to report on")
@@ -213,19 +252,34 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_OUTPUT,
         help=f"PDF destination (default {DEFAULT_OUTPUT})",
     )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="render one PDF per wallet with at least one finding",
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=REPORTS_DIR,
+        help=f"directory for --all (default {REPORTS_DIR})",
+    )
     args = parser.parse_args(argv)
 
     db = init_db()
     try:
-        markdown_text = build_markdown(db, args.address)
+        if args.all:
+            generated, skipped = run_batch(db, args.out_dir)
+        else:
+            pdf = render_pdf(build_markdown(db, args.address), Path(args.output))
+            generated, skipped = [pdf], 0
     finally:
         db.close()
 
-    pdf = render_pdf(markdown_text, Path(args.output))
-    pages = len(PdfReader(str(pdf)).pages)
-    print(f"pdf     : {pdf}")
-    print(f"size    : {pdf.stat().st_size:,} bytes")
-    print(f"pages   : {pages}")
+    print(f"reports : {len(generated)} pdf")
+    if args.all:
+        print(f"skipped : {skipped} wallet(s) without findings")
+    for pdf in generated:
+        print(f"  {pdf} ({pdf.stat().st_size:,} bytes)")
     print(f"database: {DB_PATH}")
     return 0
 
