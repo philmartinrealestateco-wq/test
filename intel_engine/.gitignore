@@ -1,0 +1,4 @@
+# Local environment and state for the intel engine.
+.venv/
+intel.db
+__pycache__/
