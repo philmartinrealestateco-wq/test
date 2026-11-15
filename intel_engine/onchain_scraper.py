@@ -15,7 +15,6 @@ import argparse
 import csv
 import re
 import time
-import warnings
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,16 +25,22 @@ from web3 import Web3
 
 from database import DB_PATH, init_db
 
-# duckduckgo-search announces its rename to `ddgs` on every call; this phase is
-# pinned to the package the brief names, so keep the per-wallet output readable.
-warnings.filterwarnings("ignore", message=r".*renamed to `ddgs`.*")
-
 ROOT = Path(__file__).resolve().parent.parent
 MASTER_CSV = ROOT / "out" / "master_targets.csv"
 
 DEFAULT_LIMIT = 5
 SEARCH_RESULTS = 3
 REQUEST_DELAY = 2.0
+SEARCH_DELAY = 1.0
+#: Keyword anchors, not operators: this DDG backend ignores both quotes and
+#: ``site:`` (measured 2026-11-15 - quoted and site-scoped queries returned 0
+#: results or unrelated filler), while "<address> etherscan" surfaced the real
+#: explorer page. Relevance is enforced client-side instead.
+SEARCH_QUERIES = (
+    "{address} etherscan",
+    "{address} holder",
+    "{address} wallet",
+)
 
 RPC_ENDPOINTS = (
     "https://ethereum-rpc.publicnode.com",
@@ -68,7 +73,6 @@ class EnsRecord:
 class SearchHit:
     title: str
     url: str
-    mentions_address: bool
 
 
 def read_targets(path: Path = MASTER_CSV, limit: int = DEFAULT_LIMIT) -> list[Target]:
@@ -131,22 +135,50 @@ def enrich_ens(ens: ENS, address: str) -> EnsRecord | None:
 
 
 def search_address(address: str, results: int = SEARCH_RESULTS) -> list[SearchHit]:
-    """Run the DuckDuckGo pivot for a raw address."""
-    items = DDGS().text(f"{address} wallet", max_results=results) or []
-    hits: list[SearchHit] = []
-    for item in items:
-        title = (item.get("title") or "").strip()
-        url = (item.get("href") or item.get("url") or "").strip()
-        haystack = f"{title} {item.get('body') or ''}".lower()
-        hits.append(
-            SearchHit(
-                title=title,
-                url=url,
-                mentions_address=address.lower() in haystack,
-            )
-        )
+    """Run the DuckDuckGo pivot, keeping only hits that name the address.
 
-    return hits
+    A bare ``"<address> wallet"`` query returns unrelated filler when nothing
+    matches, so each candidate is checked against the address and only
+    explorer-scoped queries are added on top of the exact-phrase search.
+    """
+    hits: dict[str, SearchHit] = {}
+    failures: list[str] = []
+
+    for template in SEARCH_QUERIES:
+        query = template.format(address=address)
+        try:
+            # duckduckgo-search prints a rename notice and installs its own
+            # 'always' filter during the call, so it cannot be silenced from
+            # here; it is stderr noise only.
+            items = DDGS().text(query, max_results=results) or []
+        except Exception as error:  # noqa: BLE001 - one query may be throttled
+            failures.append(f"{query}: {type(error).__name__}")
+            continue
+
+        for item in items:
+            title = (item.get("title") or "").strip()
+            url = (item.get("href") or item.get("url") or "").strip()
+            snippet = item.get("body") or ""
+            if not url or not _names_address(address, title, snippet, url):
+                continue
+            hits.setdefault(url, SearchHit(title=title, url=url))
+
+        time.sleep(SEARCH_DELAY)
+
+    if failures and len(failures) == len(SEARCH_QUERIES):
+        raise RuntimeError("; ".join(failures))
+
+    return list(hits.values())[:results]
+
+
+def _names_address(address: str, *parts: str) -> bool:
+    """True when one of ``parts`` carries the full address.
+
+    The URL counts: an explorer or forum page whose path *is* the address is a
+    genuine hit even when the title abbreviates it.
+    """
+    needle = address.lower()
+    return any(needle in part.lower() for part in parts)
 
 
 def already_scanned(db, address: str) -> bool:
@@ -176,7 +208,13 @@ def store_wallet(db, address: str, record: EnsRecord | None, complete: bool) -> 
     )
 
 
-def store_findings(db, address: str, tool: str, rows: list[tuple[str, str]], confidence: str) -> None:
+def store_findings(
+    db,
+    address: str,
+    tool: str,
+    rows: list[tuple[str, str | None]],
+    confidence: str,
+) -> None:
     """Replace this address's rows for ``tool`` so reruns do not duplicate."""
     db.execute(
         "DELETE FROM osint_findings WHERE address = ? AND tool = ?", (address, tool)
@@ -219,7 +257,6 @@ def run(limit: int = DEFAULT_LIMIT, master: Path = MASTER_CSV) -> int:
 
     found_ens = 0
     total_hits = 0
-    corroborated = 0
     skipped = 0
     errors = 0
 
@@ -266,12 +303,9 @@ def run(limit: int = DEFAULT_LIMIT, master: Path = MASTER_CSV) -> int:
                 print(f"      DDG      : ERROR ({type(error).__name__}: {str(error)[:90]})")
             else:
                 total_hits += len(hits)
-                mentioned = sum(1 for hit in hits if hit.mentions_address)
-                corroborated += mentioned
-                print(f"      DDG      : {len(hits)} result(s), {mentioned} mention the address")
+                print(f"      DDG      : {len(hits)} corroborated result(s)")
                 for hit in hits:
-                    flag = "*" if hit.mentions_address else "-"
-                    print(f"        {flag} {hit.title}")
+                    print(f"        * {hit.title}")
                     print(f"          {hit.url}")
 
             if record and record.url:
@@ -300,7 +334,7 @@ def run(limit: int = DEFAULT_LIMIT, master: Path = MASTER_CSV) -> int:
 
     print(
         f"summary: {len(targets)} target(s) · ENS names {found_ens} · "
-        f"search results {total_hits} ({corroborated} mention the address) · "
+        f"search results {total_hits} corroborated · "
         f"skipped {skipped} · errors {errors}"
     )
     print(f"database: {DB_PATH}")
