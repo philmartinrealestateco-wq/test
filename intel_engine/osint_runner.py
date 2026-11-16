@@ -1,9 +1,11 @@
 """Phase 3: off-chain OSINT for wallets that already carry a pivot.
 
 Finds wallets in ``intel.db`` with a Twitter handle or an email from Phase 2 and
-runs the bundled CLIs against them: ``sherlock`` for the handle, ``holehe`` for
-the email. Results go to ``osint_findings`` as ``UNVERIFIED``, since the tools
-report third-party registrations that say nothing about who is behind them.
+runs the bundled CLIs against them: ``sherlock`` and ``maigret`` for the handle,
+``holehe`` for the email. Results go to ``osint_findings`` as ``UNVERIFIED``,
+since the tools report third-party registrations that say nothing about who is
+behind them; a profile URL both username tools return is promoted to
+``CORROBORATED``.
 
 Rate limiting is reported, never hidden: holehe marks a blocked site ``[x]``, and
 a run where every site is ``[x]`` is an error, not "no accounts".
@@ -19,6 +21,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from adapters import canonical_url, fold_handle, maigret_adapter
 from database import DB_PATH, init_db
 from onchain_scraper import store_findings, utc_now
 
@@ -28,6 +31,9 @@ HOLEHE = SCRIPTS / "holehe.exe"
 
 DEFAULT_TIMEOUT = 300
 PER_REQUEST_TIMEOUT = "10"
+DEFAULT_MAIGRET_SITES = maigret_adapter.DEFAULT_TOP_SITES
+CORROBORATED = "CORROBORATED"
+SOCIAL_TOOLS = ("Sherlock", "Maigret")
 
 TEST_ADDRESS = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
 TEST_ENS = "vitalik.eth"
@@ -157,6 +163,41 @@ def filter_by_handle(handle: str, hits: list[tuple[str, str]]) -> tuple[list[tup
     return kept, len(hits) - len(kept)
 
 
+def reconcile_social_findings(db, address: str) -> int:
+    """Promote profile URLs that two independent tools agree on.
+
+    One row per tool is kept so provenance survives; the shared URL is what
+    earns ``CORROBORATED``. Returns the number of rows promoted.
+    """
+    placeholders = ",".join("?" for _ in SOCIAL_TOOLS)
+    rows = db.execute(
+        f"""
+        SELECT rowid, tool, url FROM osint_findings
+        WHERE lower(address) = lower(?)
+          AND tool IN ({placeholders})
+          AND url IS NOT NULL AND TRIM(url) <> ''
+        """,
+        (address, *SOCIAL_TOOLS),
+    ).fetchall()
+
+    groups: dict[str, list] = {}
+    for row in rows:
+        groups.setdefault(canonical_url(row["url"]), []).append(row)
+
+    promoted = 0
+    for group in groups.values():
+        if len({row["tool"] for row in group}) < 2:
+            continue
+        marks = ",".join("?" for _ in group)
+        db.execute(
+            f"UPDATE osint_findings SET confidence = ? WHERE rowid IN ({marks})",
+            (CORROBORATED, *(row["rowid"] for row in group)),
+        )
+        promoted += len(group)
+    db.commit()
+    return promoted
+
+
 def load_pivots(db) -> list[Pivot]:
     rows = db.execute(
         """
@@ -179,7 +220,12 @@ def load_pivots(db) -> list[Pivot]:
     return pivots
 
 
-def process_pivot(db, pivot: Pivot, timeout: int) -> tuple[int, int, int]:
+def process_pivot(
+    db,
+    pivot: Pivot,
+    timeout: int,
+    maigret_sites: int = DEFAULT_MAIGRET_SITES,
+) -> tuple[int, int, int]:
     """Run every available tool for one wallet.
 
     Returns ``(findings stored, errors, warnings)`` - a warning is a recorded
@@ -224,6 +270,40 @@ def process_pivot(db, pivot: Pivot, timeout: int) -> tuple[int, int, int]:
             print(f"  sherlock : {len(found)} account(s) ({state}{dropped_note})")
             for site, url in found:
                 print(f"             * {site}: {url}")
+
+    if pivot.twitter and maigret_sites:
+        print(f"  maigret  : {pivot.twitter}  (top {maigret_sites} sites, limit {timeout}s)")
+        result = maigret_adapter.run(pivot.twitter, timeout=timeout, top_sites=maigret_sites)
+        scope = f"{result.scope} sites" if result.scope else f"top {maigret_sites} sites"
+        handle_key = fold_handle(pivot.twitter)
+
+        if result.error and not result.accounts:
+            errors += 1
+            print(f"  maigret  : ERROR — {result.error}")
+        elif not result.accounts:
+            print(f"  maigret  : no accounts found ({scope})")
+        else:
+            rows = []
+            for account in result.accounts:
+                label = f"Account on {account.site}"
+                if fold_handle(account.variant) != handle_key:
+                    label += f" (variant: {account.variant})"
+                rows.append((label, account.url))
+
+            store_findings(db, pivot.address, "Maigret", rows, "UNVERIFIED")
+            db.commit()
+            stored += len(rows)
+            print(f"  maigret  : {len(rows)} account(s) ({scope})")
+            for account in result.accounts:
+                print(f"             * {account.site}: {account.url}")
+            if result.error:
+                warned += 1
+                print(f"  maigret  : WARNING — {result.error}")
+
+    if pivot.twitter:
+        promoted = reconcile_social_findings(db, pivot.address)
+        if promoted:
+            print(f"  overlap  : {promoted} row(s) corroborated by sherlock and maigret")
 
     if pivot.email:
         print(f"  holehe   : {pivot.email}  (limit {timeout}s)")
@@ -300,7 +380,12 @@ def seed_test_pivot(db) -> Pivot:
     return Pivot(address=TEST_ADDRESS, ens_name=TEST_ENS, twitter=TEST_TWITTER, email=None)
 
 
-def run(limit: int | None = None, timeout: int = DEFAULT_TIMEOUT, test: bool = False) -> int:
+def run(
+    limit: int | None = None,
+    timeout: int = DEFAULT_TIMEOUT,
+    test: bool = False,
+    maigret_sites: int = DEFAULT_MAIGRET_SITES,
+) -> int:
     db = init_db()
     try:
         if test:
@@ -319,7 +404,9 @@ def run(limit: int | None = None, timeout: int = DEFAULT_TIMEOUT, test: bool = F
         total = errors = warned = 0
         for index, pivot in enumerate(pivots, start=1):
             print(f"[{index}/{len(pivots)}] ", end="")
-            stored, pivot_errors, pivot_warnings = process_pivot(db, pivot, timeout)
+            stored, pivot_errors, pivot_warnings = process_pivot(
+                db, pivot, timeout, maigret_sites
+            )
             total += stored
             errors += pivot_errors
             warned += pivot_warnings
@@ -349,8 +436,23 @@ def main(argv: list[str] | None = None) -> int:
         help=f"wall-clock seconds per tool run (default {DEFAULT_TIMEOUT})",
     )
     parser.add_argument("--limit", type=int, help="process at most N pivots")
+    parser.add_argument(
+        "--maigret-sites",
+        type=int,
+        default=DEFAULT_MAIGRET_SITES,
+        metavar="N",
+        help=(
+            f"Maigret scans the top N sites (default {DEFAULT_MAIGRET_SITES}); "
+            "0 disables the Maigret pass"
+        ),
+    )
     args = parser.parse_args(argv)
-    return run(limit=args.limit, timeout=args.timeout, test=args.test)
+    return run(
+        limit=args.limit,
+        timeout=args.timeout,
+        test=args.test,
+        maigret_sites=args.maigret_sites,
+    )
 
 
 if __name__ == "__main__":

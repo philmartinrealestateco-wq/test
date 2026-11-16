@@ -16,6 +16,7 @@ from pathlib import Path
 import markdown
 from xhtml2pdf import pisa
 
+from adapters import canonical_url
 from database import DB_PATH, init_db
 
 REPORTS_DIR = Path(__file__).resolve().parent / "reports"
@@ -73,6 +74,42 @@ def load_findings(db, address: str, tool: str) -> list:
     ).fetchall()
 
 
+def load_social_footprint(db, address: str) -> list:
+    """One row per profile URL, carrying every tool that reported it."""
+    rows = db.execute(
+        """
+        SELECT tool, finding, url, confidence
+        FROM osint_findings
+        WHERE lower(address) = lower(?)
+          AND tool IN ('Sherlock', 'Maigret')
+          AND url IS NOT NULL AND TRIM(url) <> ''
+        ORDER BY finding
+        """,
+        (address.lower(),),
+    ).fetchall()
+
+    groups: dict[str, list] = {}
+    for row in rows:
+        groups.setdefault(canonical_url(row["url"]), []).append(row)
+
+    footprint: list[dict] = []
+    for group in groups.values():
+        group.sort(key=lambda row: row["finding"] or "")
+        footprint.append(
+            {
+                "finding": group[0]["finding"],
+                "url": group[0]["url"],
+                "tools": ",".join(sorted({row["tool"].lower() for row in group})),
+                "corroborated": any(
+                    (row["confidence"] or "").upper() == "CORROBORATED" for row in group
+                ),
+            }
+        )
+
+    footprint.sort(key=lambda item: (item["finding"] or "").lower())
+    return footprint
+
+
 def load_sanctions_runs(db) -> list:
     """Latest screening run per dataset, so the PDF states what was checked."""
     return db.execute(
@@ -109,7 +146,7 @@ def build_markdown(db, address: str) -> str:
         raise SystemExit(f"error: {address} is not in {DB_PATH}; run the scraper first")
 
     web = load_findings(db, address, "DuckDuckGo")
-    sherlock = load_findings(db, address, "Sherlock")
+    social = load_social_footprint(db, address)
     holehe = load_findings(db, address, "Holehe")
     ens_records = load_findings(db, address, "ENS")
     sanctions = load_findings(db, address, "OpenSanctions")
@@ -141,7 +178,7 @@ def build_markdown(db, address: str) -> str:
         f"| Last scanned | {cell(wallet['last_scanned'])} |",
         f"| Sanctions matches | {len(sanctions)} |",
         f"| Web mentions stored | {len(web)} |",
-        f"| Sherlock accounts stored | {len(sherlock)} |",
+        f"| Social profiles stored | {len(social)} |",
         f"| Holehe rows stored | {len(holehe)} |",
         "",
     ]
@@ -211,22 +248,33 @@ def build_markdown(db, address: str) -> str:
     else:
         lines += ["_No web mentions recorded for this address._", ""]
 
-    lines += ["## Sherlock Findings", ""]
-    if sherlock:
-        lines += ["| Platform | Profile URL | Confidence |", "| --- | --- | --- |"]
-        for row in sherlock:
+    lines += ["## Social Media Footprint", ""]
+    if social:
+        lines += [
+            "| Platform | Profile URL | Also seen by | Confidence |",
+            "| --- | --- | --- | --- |",
+        ]
+        for row in social:
             url = row["url"] or ""
             link = f"[{cell(url)}]({url})" if url else "&mdash;"
-            platform = row["finding"].removeprefix("Account on ")
-            lines.append(f"| {cell(platform)} | {link} | {cell(row['confidence'])} |")
+            platform = (row["finding"] or "").removeprefix("Account on ")
+            tools = ", ".join(
+                sorted({tool.strip().lower() for tool in (row["tools"] or "").split(",") if tool.strip()})
+            )
+            confidence = "CORROBORATED" if row["corroborated"] else "UNVERIFIED"
+            lines.append(
+                f"| {cell(platform)} | {link} | {cell(tools)} | {confidence} |"
+            )
         lines.append("")
+        corroborated = sum(1 for row in social if row["corroborated"])
         lines += [
-            f"<p class=\"lede\">{len(sherlock)} registration(s). Hits whose profile URL did "
-            "not contain the handle were discarded as false positives.</p>",
+            f"<p class=\"lede\">{len(social)} profile URL(s); {corroborated} returned by both "
+            "username tools and marked CORROBORATED. Sherlock hits whose URL did not contain the "
+            "handle were discarded as false positives.</p>",
             "",
         ]
     else:
-        lines += ["_No sherlock findings recorded._", ""]
+        lines += ["_No social profiles recorded._", ""]
 
     lines += ["## Unresolved Questions", ""]
     questions: list[str] = []
@@ -252,10 +300,12 @@ def build_markdown(db, address: str) -> str:
             "The email enumeration was rate-limited from this host (`IP Rate Limited`), so email "
             "exposure is **unknown**, not absent."
         )
-    if sherlock:
+    if social:
+        corroborated = sum(1 for row in social if row["corroborated"])
         questions.append(
-            f"None of the {len(sherlock)} sherlock registrations is cryptographically tied to this "
-            "address - a username collision is more likely than one person controlling all of them."
+            f"{corroborated} of {len(social)} profile URL(s) were returned by both sherlock and "
+            "maigret. Two directories agreeing on a URL is not attribution: neither proves the "
+            "account belongs to whoever controls this wallet."
         )
     if web:
         questions.append(
