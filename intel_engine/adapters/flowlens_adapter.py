@@ -176,6 +176,18 @@ def plain_decimal(value: Decimal) -> str:
     return text or "0"
 
 
+def group_amount(value: object) -> str:
+    """Add thousands separators to the integer part for display only."""
+    text = str(value)
+    whole, dot, fraction = text.partition(".")
+    sign = "-" if whole.startswith("-") else ""
+    digits = whole[len(sign) :]
+    if not digits.isdigit():
+        return text
+    grouped = f"{int(digits):,}"
+    return f"{sign}{grouped}{dot}{fraction}" if dot else f"{sign}{grouped}"
+
+
 def summarise(case: FlowLensCase) -> list[dict]:
     """Per-counterparty, per-asset totals, largest volume first."""
     groups: dict[tuple[str, str], dict] = {}
@@ -200,5 +212,7 @@ def summarise(case: FlowLensCase) -> list[dict]:
         }
         for (address, asset), row in groups.items()
     ]
-    summary.sort(key=lambda item: item["volume"], reverse=True)
+    # Ranking by raw volume would compare token units across assets, so an
+    # airdrop with a huge supply would outrank real money movement.
+    summary.sort(key=lambda item: (-item["count"], -item["volume"], item["address"]))
     return summary

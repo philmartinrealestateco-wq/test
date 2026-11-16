@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import unicodedata
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -18,7 +19,7 @@ import markdown
 from xhtml2pdf import pisa
 
 from adapters import canonical_url
-from adapters.flowlens_adapter import plain_decimal
+from adapters.flowlens_adapter import group_amount, plain_decimal
 from database import DB_PATH, init_db
 
 REPORTS_DIR = Path(__file__).resolve().parent / "reports"
@@ -128,7 +129,7 @@ def load_flow_evidence(db, address: str) -> list:
 
 
 def summarise_flow(rows: list) -> list[dict]:
-    """Per-counterparty, per-asset totals, largest volume first."""
+    """Per-counterparty, per-asset totals, most transfers first."""
     groups: dict[tuple[str, str], dict] = {}
     for row in rows:
         key = (row["counterparty"] or "", row["asset"] or "unknown")
@@ -151,7 +152,7 @@ def summarise_flow(rows: list) -> list[dict]:
         }
         for (address, asset), entry in groups.items()
     ]
-    summary.sort(key=lambda item: item["volume"], reverse=True)
+    summary.sort(key=lambda item: (-item["count"], -item["volume"], item["address"]))
     return summary
 
 
@@ -163,6 +164,47 @@ def short_address(value: str | None) -> str:
 def short_time(value: str | None) -> str:
     text = (value or "").replace("T", " ")
     return text.split(".")[0].replace("Z", "")
+
+
+_HOMOGLYPHS = {
+    "А": "A", "В": "B", "Е": "E", "К": "K", "М": "M", "Н": "H", "О": "O",
+    "Р": "P", "С": "C", "Т": "T", "У": "Y", "Х": "X", "Ѕ": "S", "І": "I",
+    "Ј": "J", "Ԛ": "Q", "Ԝ": "W",
+    "а": "a", "в": "b", "е": "e", "к": "k", "м": "m", "н": "h", "о": "o",
+    "р": "p", "с": "c", "т": "t", "у": "y", "х": "x", "ѕ": "s", "і": "i",
+    "ј": "j", "ԛ": "q", "ԝ": "w",
+}
+
+
+def _fold_char(char: str) -> str:
+    """Best-effort ASCII for one look-alike character."""
+    if char.isascii():
+        return char
+    name = unicodedata.name(char, "")
+    for prefix, lower in (("LISU SMALL LETTER ", True), ("LISU LETTER ", False)):
+        if name.startswith(prefix):
+            # Lisu letters are named by sound (TAH, SA, DA), so the first
+            # letter of the name is the Latin look-alike.
+            sound = name[len(prefix) :]
+            return sound[:1].lower() if lower else sound[:1]
+    if char in _HOMOGLYPHS:
+        return _HOMOGLYPHS[char]
+    folded = unicodedata.normalize("NFKD", char).encode("ascii", "ignore").decode()
+    return folded or "?"
+
+
+def display_symbol(value: object) -> str:
+    """Render a token symbol the PDF font can draw, flagging homoglyph spoofs.
+
+    Impersonation tokens use Cyrillic or Lisu look-alikes (``EꓔH``, ``ꓴꓢꓓС``)
+    that Helvetica cannot draw; folding them to ASCII keeps the row readable and
+    the ``mixed-script`` marker records that the symbol was not plain Latin.
+    """
+    text = str(value or "unknown")
+    if text.isascii():
+        return text
+    folded = "".join(_fold_char(char) for char in text)
+    return f"{folded} (mixed-script)"
 
 
 def load_sanctions_runs(db) -> list:
@@ -347,8 +389,9 @@ def build_markdown(db, address: str) -> str:
         ]
         for item in summarise_flow(flow)[:10]:
             lines.append(
-                f"| `{cell(short_address(item['address']))}` | {cell(item['asset'])} | "
-                f"{item['count']} | {cell(item['in'])} | {cell(item['out'])} |"
+                f"| `{cell(short_address(item['address']))}` | {cell(display_symbol(item['asset']))} | "
+                f"{item['count']} | {cell(group_amount(item['in']))} | "
+                f"{cell(group_amount(item['out']))} |"
             )
         lines += [
             "",
@@ -365,7 +408,7 @@ def build_markdown(db, address: str) -> str:
             )
             lines.append(
                 f"| {cell(short_time(row['block_time']))} | {cell(row['direction'])} | "
-                f"{cell(row['amount'])} | {cell(row['asset'])} | "
+                f"{cell(group_amount(row['amount']))} | {cell(display_symbol(row['asset']))} | "
                 f"`{cell(short_address(row['counterparty']))}` | {link} |"
             )
         lines.append("")

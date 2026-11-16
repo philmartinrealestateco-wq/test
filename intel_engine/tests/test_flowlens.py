@@ -170,6 +170,42 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(summary[0]["in"], "5")
         self.assertEqual(summary[0]["out"], "15")
 
+    def test_the_most_active_counterparty_ranks_first(self):
+        large = dict(transfer("in", raw="9000000000"))
+        large["from"] = "0x" + "2" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            payload = case_payload(
+                transfers=[transfer("out", raw="1000000"), transfer("out", raw="2000000"), large]
+            )
+            case = load_case(write_case(directory, payload))
+
+        summary = summarise(case)
+        self.assertEqual(summary[0]["count"], 2)
+        self.assertEqual(summary[0]["address"], OTHER)
+        self.assertEqual(summary[1]["count"], 1)
+
+
+class GroupingTests(unittest.TestCase):
+    def test_thousands_separators_are_added_to_the_integer_part(self):
+        from adapters.flowlens_adapter import group_amount
+
+        self.assertEqual(group_amount("28659402866501395172155176150000000"), "28,659,402,866,501,395,172,155,176,150,000,000")
+        self.assertEqual(group_amount("1086.5"), "1,086.5")
+        self.assertEqual(group_amount("11"), "11")
+        self.assertEqual(group_amount("0.00000954"), "0.00000954")
+        self.assertEqual(group_amount("n/a"), "n/a")
+
+
+class SymbolTests(unittest.TestCase):
+    def test_plain_symbols_pass_through(self):
+        self.assertEqual(report_generator.display_symbol("USDT"), "USDT")
+        self.assertEqual(report_generator.display_symbol(None), "unknown")
+
+    def test_homoglyph_symbols_are_folded_and_flagged(self):
+        self.assertEqual(report_generator.display_symbol("EꓔH"), "ETH (mixed-script)")
+        self.assertEqual(report_generator.display_symbol("ꓴꓢꓓС"), "USDC (mixed-script)")
+        self.assertEqual(report_generator.display_symbol("ÚЅDC"), "USDC (mixed-script)")
+
 
 class StoreTests(unittest.TestCase):
     def setUp(self):
