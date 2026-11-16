@@ -90,6 +90,19 @@ def load_sanctions_runs(db) -> list:
     ).fetchall()
 
 
+def load_name_screenings(db) -> list:
+    """How many entity names have been screened, per dataset."""
+    return db.execute(
+        """
+        SELECT dataset, count(*) AS names, ifnull(sum(matches), 0) AS matches,
+               max(checked_at) AS last_checked, max(dataset_updated) AS dataset_updated
+        FROM sanctions_names
+        GROUP BY dataset
+        ORDER BY dataset
+        """
+    ).fetchall()
+
+
 def build_markdown(db, address: str) -> str:
     wallet = load_wallet(db, address)
     if wallet is None:
@@ -101,6 +114,7 @@ def build_markdown(db, address: str) -> str:
     ens_records = load_findings(db, address, "ENS")
     sanctions = load_findings(db, address, "OpenSanctions")
     sanction_runs = load_sanctions_runs(db)
+    name_runs = load_name_screenings(db)
 
     ens_url = next((row["url"] for row in ens_records if row["url"]), None)
     holehe_blocked = any(row["confidence"] == "ERROR" for row in holehe)
@@ -132,20 +146,29 @@ def build_markdown(db, address: str) -> str:
         "",
     ]
 
-    lines += ["## Sanctions Screening", ""]
+    lines += ["## Risk & Sanctions Screening", ""]
     if sanctions:
         lines += [
-            '<p class="alert"><strong>Listed wallet.</strong> This address appears in a '
-            "sanctions dataset. A listing identifies the address, not the person or "
-            "organisation that controls it.</p>",
+            '<p class="alert"><strong>Sanctions review.</strong> A sanctioned address or name is '
+            "linked to this target. The listing identifies the address or name, not the person or "
+            "organisation that controls the wallet.</p>",
             "",
-            "| Match | Dataset entry |",
-            "| --- | --- |",
+            "| Match | Type | Confidence | Source |",
+            "| --- | --- | --- | --- |",
         ]
         for row in sanctions:
+            finding = row["finding"] or ""
+            if finding.startswith("Name match: "):
+                label, kind = finding[len("Name match: ") :], "Name match"
+            elif "listing: " in finding:
+                label, kind = finding.split("listing: ", 1)[1], "Address listing"
+            else:
+                label, kind = finding, "Address listing"
             url = row["url"] or ""
             link = f"[{cell(url)}]({url})" if url else "&mdash;"
-            lines.append(f"| {cell(row['finding'])} | {link} |")
+            lines.append(
+                f"| {cell(label)} | {kind} | {cell(row['confidence'])} | {link} |"
+            )
         lines.append("")
     else:
         lines += ["_No sanctions listing matched this address._", ""]
@@ -157,7 +180,14 @@ def build_markdown(db, address: str) -> str:
             f'{run["entities"]:,} entities, dataset updated {cell(run["dataset_updated"])} &mdash; '
             f'on {cell(run["checked_at"])}: {run["matches"]} match(es) in that run.</p>'
         )
-    if not sanction_runs:
+    for run in name_runs:
+        lines.append(
+            f'<p class="lede">Screened {run["names"]} entity name(s) against '
+            f'{cell(run["dataset"])} &mdash; exact caption or alias = VERIFIED, '
+            f'token containment = POSSIBLE, dataset updated {cell(run["dataset_updated"])} '
+            f'&mdash; latest {cell(run["last_checked"])}: {run["matches"]} match(es) recorded.</p>'
+        )
+    if not sanction_runs and not name_runs:
         lines += ["_No sanctions screening has been recorded for this database yet._"]
     lines += [
         "",
@@ -237,7 +267,7 @@ def build_markdown(db, address: str) -> str:
             "The sanctions match concerns the address, not its operator: a designated wallet can "
             "be funded or drained by a third party, so control still needs separate proof."
         )
-    elif sanction_runs:
+    elif sanction_runs or name_runs:
         questions.append(
             "Sanctions screening returned no match; absence from a sanctions list is not evidence "
             "that the wallet is clean."

@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS osint_findings (
     finding TEXT,
     url TEXT,
     confidence TEXT,
-    timestamp TIMESTAMP
+    timestamp TIMESTAMP,
+    category TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_osint_findings_address
@@ -42,7 +43,32 @@ CREATE TABLE IF NOT EXISTS sanctions_runs (
     matches INTEGER,
     checked_at TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS sanctions_names (
+    name_key TEXT NOT NULL,
+    query TEXT NOT NULL,
+    dataset TEXT NOT NULL,
+    dataset_updated TIMESTAMP,
+    matches INTEGER,
+    best_entity_id TEXT,
+    best_caption TEXT,
+    best_confidence TEXT,
+    checked_at TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sanctions_names_key
+    ON sanctions_names (name_key, dataset);
 """
+
+MIGRATIONS = (("osint_findings", "category", "TEXT"),)
+
+
+def _migrate(connection: sqlite3.Connection) -> None:
+    """Add columns that predate the current schema to an existing database."""
+    for table, column, declaration in MIGRATIONS:
+        columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+        if column not in columns:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
 
 def connect(path: str | Path = DB_PATH) -> sqlite3.Connection:
@@ -56,6 +82,7 @@ def init_db(path: str | Path = DB_PATH) -> sqlite3.Connection:
     """Create any missing tables and return the open connection."""
     connection = connect(path)
     connection.executescript(SCHEMA)
+    _migrate(connection)
     connection.commit()
     return connection
 
