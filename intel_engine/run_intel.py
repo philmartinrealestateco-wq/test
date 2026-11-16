@@ -1,8 +1,9 @@
 """Entry point for the intel engine.
 
 Runs the whole chain over ``out/master_targets.csv``: on-chain enrichment, then
-off-chain OSINT for whatever pivots that produced, then a PDF for every wallet
-that ended up with at least one finding.
+OpenSanctions screening of the cached wallets, then off-chain OSINT for whatever
+pivots that produced, then a PDF for every wallet that ended up with at least
+one finding.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import sqlite3
 import onchain_scraper
 import osint_runner
 import report_generator
+import sanctions
 from database import DB_PATH, init_db
 
 
@@ -31,6 +33,10 @@ def main() -> int:
 
     print("== phase 2: on-chain enrichment ==")
     scrape_status = onchain_scraper.run(limit=None)
+    print()
+
+    print("== phase 2b: sanctions screening ==")
+    sanctions_status = sanctions.run()
     print()
 
     print("== phase 3: off-chain OSINT ==")
@@ -54,7 +60,7 @@ def main() -> int:
     print(f"database: {DB_PATH}")
     print(f"reports : {report_generator.REPORTS_DIR}")
 
-    return 0 if not (scrape_status or pivot_status) else 1
+    return 0 if not (scrape_status or sanctions_status or pivot_status) else 1
 
 
 if __name__ == "__main__":

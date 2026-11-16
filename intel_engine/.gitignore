@@ -2,3 +2,5 @@
 .venv/
 intel.db
 __pycache__/
+# Cached OpenSanctions bulk exports, re-downloaded on demand.
+.cache/

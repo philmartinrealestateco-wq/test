@@ -1,8 +1,9 @@
 """Phase 4: render one wallet's intel into a styled PDF report.
 
-Draws everything from ``intel.db``: the ENS cache, the web mentions collected in
-Phase 2 and the sherlock/holehe results from Phase 3. The Markdown is the source
-of truth, converted to HTML with ``markdown`` and printed with ``xhtml2pdf``.
+Draws everything from ``intel.db``: the ENS cache, the OpenSanctions screening
+result, the web mentions collected in Phase 2 and the sherlock/holehe results
+from Phase 3. The Markdown is the source of truth, converted to HTML with
+``markdown`` and printed with ``xhtml2pdf``.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ td { border-bottom: 0.5pt solid #d8dee4; padding: 3.5pt 5pt; vertical-align: top
 code { font-family: Courier, monospace; font-size: 8.5pt; color: #0b3d5c; }
 .meta { color: #57606a; font-size: 9pt; }
 .lede { color: #57606a; font-size: 9pt; margin-bottom: 8pt; }
+.alert { background-color: #fdecea; border: 1pt solid #c62828; color: #7f1d1d; font-size: 9pt; padding: 6pt 8pt; margin: 6pt 0 8pt 0; }
 """
 
 
@@ -71,6 +73,23 @@ def load_findings(db, address: str, tool: str) -> list:
     ).fetchall()
 
 
+def load_sanctions_runs(db) -> list:
+    """Latest screening run per dataset, so the PDF states what was checked."""
+    return db.execute(
+        """
+        SELECT dataset, entities, wallets, checked, matches, dataset_updated, checked_at
+        FROM sanctions_runs AS runs
+        WHERE rowid = (
+            SELECT rowid FROM sanctions_runs
+            WHERE dataset = runs.dataset
+            ORDER BY checked_at DESC, rowid DESC
+            LIMIT 1
+        )
+        ORDER BY dataset
+        """
+    ).fetchall()
+
+
 def build_markdown(db, address: str) -> str:
     wallet = load_wallet(db, address)
     if wallet is None:
@@ -80,6 +99,8 @@ def build_markdown(db, address: str) -> str:
     sherlock = load_findings(db, address, "Sherlock")
     holehe = load_findings(db, address, "Holehe")
     ens_records = load_findings(db, address, "ENS")
+    sanctions = load_findings(db, address, "OpenSanctions")
+    sanction_runs = load_sanctions_runs(db)
 
     ens_url = next((row["url"] for row in ens_records if row["url"]), None)
     holehe_blocked = any(row["confidence"] == "ERROR" for row in holehe)
@@ -92,7 +113,7 @@ def build_markdown(db, address: str) -> str:
         f'({subject}). Every value below comes from <code>intel.db</code>; nothing was '
         "re-verified for this document.</p>",
         "",
-        f'<p class="meta">Generated {utc_now()} &middot; sources: ENS, DuckDuckGo, sherlock, holehe</p>',
+        f'<p class="meta">Generated {utc_now()} &middot; sources: ENS, DuckDuckGo, sherlock, holehe, OpenSanctions</p>',
         "",
         "## Target Overview",
         "",
@@ -104,9 +125,44 @@ def build_markdown(db, address: str) -> str:
         f"| Email (ENS) | {cell(wallet['ens_email'])} |",
         f"| Published URL (ENS) | {cell(ens_url)} |",
         f"| Last scanned | {cell(wallet['last_scanned'])} |",
+        f"| Sanctions matches | {len(sanctions)} |",
         f"| Web mentions stored | {len(web)} |",
         f"| Sherlock accounts stored | {len(sherlock)} |",
         f"| Holehe rows stored | {len(holehe)} |",
+        "",
+    ]
+
+    lines += ["## Sanctions Screening", ""]
+    if sanctions:
+        lines += [
+            '<p class="alert"><strong>Listed wallet.</strong> This address appears in a '
+            "sanctions dataset. A listing identifies the address, not the person or "
+            "organisation that controls it.</p>",
+            "",
+            "| Match | Dataset entry |",
+            "| --- | --- |",
+        ]
+        for row in sanctions:
+            url = row["url"] or ""
+            link = f"[{cell(url)}]({url})" if url else "&mdash;"
+            lines.append(f"| {cell(row['finding'])} | {link} |")
+        lines.append("")
+    else:
+        lines += ["_No sanctions listing matched this address._", ""]
+
+    for run in sanction_runs:
+        lines.append(
+            f'<p class="lede">Screened {run["checked"]} cached wallet(s) against '
+            f'{cell(run["dataset"])} &mdash; {run["wallets"]:,} sanctioned addresses of '
+            f'{run["entities"]:,} entities, dataset updated {cell(run["dataset_updated"])} &mdash; '
+            f'on {cell(run["checked_at"])}: {run["matches"]} match(es) in that run.</p>'
+        )
+    if not sanction_runs:
+        lines += ["_No sanctions screening has been recorded for this database yet._"]
+    lines += [
+        "",
+        '<p class="lede">Source: OpenSanctions, licensed CC BY-NC 4.0 '
+        "(https://www.opensanctions.org/licensing/).</p>",
         "",
     ]
 
@@ -175,6 +231,16 @@ def build_markdown(db, address: str) -> str:
         questions.append(
             "Web mentions are unverified search results: they establish that the address appears "
             "online, not who controls it."
+        )
+    if sanctions:
+        questions.append(
+            "The sanctions match concerns the address, not its operator: a designated wallet can "
+            "be funded or drained by a third party, so control still needs separate proof."
+        )
+    elif sanction_runs:
+        questions.append(
+            "Sanctions screening returned no match; absence from a sanctions list is not evidence "
+            "that the wallet is clean."
         )
     questions.append(
         "On-chain history (funding source, counterparties) was not reviewed here and is the "

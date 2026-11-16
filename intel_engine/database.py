@@ -31,6 +31,17 @@ CREATE TABLE IF NOT EXISTS osint_findings (
 
 CREATE INDEX IF NOT EXISTS idx_osint_findings_address
     ON osint_findings (address);
+
+CREATE TABLE IF NOT EXISTS sanctions_runs (
+    dataset TEXT NOT NULL,
+    source_url TEXT,
+    dataset_updated TIMESTAMP,
+    entities INTEGER,
+    wallets INTEGER,
+    checked INTEGER,
+    matches INTEGER,
+    checked_at TIMESTAMP
+);
 """
 
 
