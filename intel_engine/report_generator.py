@@ -11,17 +11,20 @@ from __future__ import annotations
 import argparse
 import re
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import markdown
 from xhtml2pdf import pisa
 
 from adapters import canonical_url
+from adapters.flowlens_adapter import plain_decimal
 from database import DB_PATH, init_db
 
 REPORTS_DIR = Path(__file__).resolve().parent / "reports"
 DEFAULT_ADDRESS = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
 DEFAULT_OUTPUT = REPORTS_DIR / "vitalik_test.pdf"
+FLOW_ROW_LIMIT = 25
 
 STYLE = """
 @page {
@@ -110,6 +113,58 @@ def load_social_footprint(db, address: str) -> list:
     return footprint
 
 
+def load_flow_evidence(db, address: str) -> list:
+    """Every stored FlowLens transfer for this wallet, newest first."""
+    return db.execute(
+        """
+        SELECT chain_id, tx_hash, event_index, block_number, block_time, direction,
+               counterparty, amount, asset, kind, provider, source_url, coverage
+        FROM flow_evidence
+        WHERE lower(address) = lower(?)
+        ORDER BY block_time DESC, event_index DESC
+        """,
+        (address.lower(),),
+    ).fetchall()
+
+
+def summarise_flow(rows: list) -> list[dict]:
+    """Per-counterparty, per-asset totals, largest volume first."""
+    groups: dict[tuple[str, str], dict] = {}
+    for row in rows:
+        key = (row["counterparty"] or "", row["asset"] or "unknown")
+        entry = groups.setdefault(key, {"count": 0, "in": Decimal(0), "out": Decimal(0)})
+        entry["count"] += 1
+        try:
+            amount = Decimal(str(row["amount"]))
+        except (InvalidOperation, ValueError):
+            continue
+        entry["in" if row["direction"] == "in" else "out"] += amount
+
+    summary = [
+        {
+            "address": address,
+            "asset": asset,
+            "count": entry["count"],
+            "in": plain_decimal(entry["in"]),
+            "out": plain_decimal(entry["out"]),
+            "volume": entry["in"] + entry["out"],
+        }
+        for (address, asset), entry in groups.items()
+    ]
+    summary.sort(key=lambda item: item["volume"], reverse=True)
+    return summary
+
+
+def short_address(value: str | None) -> str:
+    text = value or ""
+    return f"{text[:6]}…{text[-4:]}" if len(text) > 12 else text
+
+
+def short_time(value: str | None) -> str:
+    text = (value or "").replace("T", " ")
+    return text.split(".")[0].replace("Z", "")
+
+
 def load_sanctions_runs(db) -> list:
     """Latest screening run per dataset, so the PDF states what was checked."""
     return db.execute(
@@ -152,6 +207,7 @@ def build_markdown(db, address: str) -> str:
     sanctions = load_findings(db, address, "OpenSanctions")
     sanction_runs = load_sanctions_runs(db)
     name_runs = load_name_screenings(db)
+    flow = load_flow_evidence(db, address)
 
     ens_url = next((row["url"] for row in ens_records if row["url"]), None)
     holehe_blocked = any(row["confidence"] == "ERROR" for row in holehe)
@@ -164,7 +220,7 @@ def build_markdown(db, address: str) -> str:
         f'({subject}). Every value below comes from <code>intel.db</code>; nothing was '
         "re-verified for this document.</p>",
         "",
-        f'<p class="meta">Generated {utc_now()} &middot; sources: ENS, DuckDuckGo, sherlock, holehe, OpenSanctions</p>',
+        f'<p class="meta">Generated {utc_now()} &middot; sources: ENS, DuckDuckGo, sherlock, maigret, holehe, OpenSanctions, FlowLens</p>',
         "",
         "## Target Overview",
         "",
@@ -179,6 +235,7 @@ def build_markdown(db, address: str) -> str:
         f"| Sanctions matches | {len(sanctions)} |",
         f"| Web mentions stored | {len(web)} |",
         f"| Social profiles stored | {len(social)} |",
+        f"| Traced transfers | {len(flow)} |",
         f"| Holehe rows stored | {len(holehe)} |",
         "",
     ]
@@ -276,6 +333,50 @@ def build_markdown(db, address: str) -> str:
     else:
         lines += ["_No social profiles recorded._", ""]
 
+    lines += ["## Transaction Tracing & Funding", ""]
+    if flow:
+        coverage = flow[0]["coverage"] or "coverage unknown"
+        inflow = sum(1 for row in flow if row["direction"] == "in")
+        lines += [
+            f'<p class="lede">Provider coverage: {cell(coverage)}. '
+            f"{len(flow)} transfer(s) loaded ({inflow} in, {len(flow) - inflow} out). "
+            "A partial trace is a bounded window, not a complete history.</p>",
+            "",
+            "| Counterparty | Asset | Transfers | In | Out |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+        for item in summarise_flow(flow)[:10]:
+            lines.append(
+                f"| `{cell(short_address(item['address']))}` | {cell(item['asset'])} | "
+                f"{item['count']} | {cell(item['in'])} | {cell(item['out'])} |"
+            )
+        lines += [
+            "",
+            "| Time (UTC) | Dir | Amount | Asset | Counterparty | Transaction |",
+            "| --- | --- | --- | --- | --- | --- |",
+        ]
+        for row in flow[:FLOW_ROW_LIMIT]:
+            tx_hash = row["tx_hash"] or ""
+            label = f"`{cell(short_address(tx_hash))}`"
+            link = (
+                f"[{label}]({row['source_url']})"
+                if row["source_url"]
+                else label
+            )
+            lines.append(
+                f"| {cell(short_time(row['block_time']))} | {cell(row['direction'])} | "
+                f"{cell(row['amount'])} | {cell(row['asset'])} | "
+                f"`{cell(short_address(row['counterparty']))}` | {link} |"
+            )
+        lines.append("")
+        if len(flow) > FLOW_ROW_LIMIT:
+            lines += [
+                f'<p class="lede">Showing the newest {FLOW_ROW_LIMIT} of {len(flow)} transfers.</p>',
+                "",
+            ]
+    else:
+        lines += ["_No on-chain flow traced for this address._", ""]
+
     lines += ["## Unresolved Questions", ""]
     questions: list[str] = []
 
@@ -322,10 +423,20 @@ def build_markdown(db, address: str) -> str:
             "Sanctions screening returned no match; absence from a sanctions list is not evidence "
             "that the wallet is clean."
         )
-    questions.append(
-        "On-chain history (funding source, counterparties) was not reviewed here and is the "
-        "next step for attribution."
-    )
+    if flow:
+        questions.append(
+            f"On-chain history here is {len(flow)} provider-returned transfer(s). Unless the coverage "
+            "line says complete, counterparties outside the loaded window are invisible."
+        )
+        questions.append(
+            "A transfer shows that funds moved between two addresses; it does not establish who "
+            "controls either side."
+        )
+    else:
+        questions.append(
+            "On-chain history (funding source, counterparties) was not reviewed here and is the "
+            "next step for attribution."
+        )
 
     lines += [f"- {question}" for question in questions]
     lines.append("")
@@ -351,7 +462,7 @@ def render_pdf(markdown_text: str, output_path: Path) -> Path:
 
 
 def wallets_with_findings(db) -> list:
-    """Wallets worth a PDF: an ENS name, or any finding that is not an ERROR row."""
+    """Wallets worth a PDF: an ENS name, a retained finding, or traced on-chain flow."""
     return db.execute(
         """
         SELECT w.address, w.ens_name
@@ -361,6 +472,10 @@ def wallets_with_findings(db) -> list:
                 SELECT 1 FROM osint_findings f
                 WHERE lower(f.address) = lower(w.address)
                   AND (f.confidence IS NULL OR upper(f.confidence) <> 'ERROR')
+           )
+           OR EXISTS (
+                SELECT 1 FROM flow_evidence e
+                WHERE lower(e.address) = lower(w.address)
            )
         ORDER BY lower(w.address)
         """

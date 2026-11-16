@@ -58,6 +58,28 @@ CREATE TABLE IF NOT EXISTS sanctions_names (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sanctions_names_key
     ON sanctions_names (name_key, dataset);
+
+CREATE TABLE IF NOT EXISTS flow_evidence (
+    address TEXT NOT NULL,
+    chain_id INTEGER,
+    tx_hash TEXT,
+    event_index TEXT,
+    block_number INTEGER,
+    block_time TIMESTAMP,
+    direction TEXT,
+    counterparty TEXT,
+    amount TEXT,
+    asset TEXT,
+    kind TEXT,
+    provider TEXT,
+    source_url TEXT,
+    coverage TEXT,
+    confidence TEXT,
+    timestamp TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_flow_evidence_address
+    ON flow_evidence (address, chain_id);
 """
 
 MIGRATIONS = (("osint_findings", "category", "TEXT"),)
