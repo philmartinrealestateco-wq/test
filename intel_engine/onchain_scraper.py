@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+import requests
 from duckduckgo_search import DDGS
 from ens.ens import ENS
 from web3 import Web3
@@ -53,8 +54,15 @@ RPC_ENDPOINTS = (
 )
 
 TEXT_KEYS = ("com.twitter", "email", "url")
+XRPSCAN_ACCOUNT_URL = "https://api.xrpscan.com/api/v1/account/{address}"
+XRP_SEARCH_QUERIES = (
+    "{address} xrpscan",
+    "{address} bithomp",
+    "{address} xrp wallet",
+)
 
 _EVM_ADDRESS = re.compile(r"0x[0-9a-fA-F]{40}$")
+_XRP_ADDRESS = re.compile(r"^r[1-9A-HJ-NP-Za-km-z]{24,34}$")
 
 
 @dataclass(frozen=True)
@@ -63,6 +71,7 @@ class Target:
     best_usd: str
     networks: str
     status: str
+    kind: str = "evm"
 
 
 @dataclass(frozen=True)
@@ -71,6 +80,80 @@ class EnsRecord:
     twitter: str
     email: str
     url: str
+
+
+@dataclass(frozen=True)
+class XrpIdentity:
+    address: str
+    label: str = ""
+    label_desc: str = ""
+    label_domain: str = ""
+    label_twitter: str = ""
+    label_verified: bool = False
+    parent_label: str = ""
+    parent_desc: str = ""
+    parent_domain: str = ""
+    parent_account: str = ""
+    parent_verified: bool = False
+    domain_record: str = ""
+
+    def finding_rows(self) -> list[tuple[str, str | None, str]]:
+        """XRPScan rows as (finding, url, confidence)."""
+
+        account_url = f"https://xrpscan.com/account/{self.address}"
+        rows: list[tuple[str, str | None, str]] = []
+
+        if self.label:
+            label_url = (
+                f"https://{self.label_domain}" if self.label_domain else account_url
+            )
+            suffix = f" ({self.label_desc})" if self.label_desc else ""
+            rows.append(
+                (
+                    f"XRPScan label: {self.label}{suffix}",
+                    label_url,
+                    "VERIFIED" if self.label_verified else "UNVERIFIED",
+                )
+            )
+
+        if self.label_twitter:
+            rows.append(
+                (
+                    f"XRPScan twitter: @{self.label_twitter}",
+                    f"https://twitter.com/{self.label_twitter}",
+                    "VERIFIED" if self.label_verified else "UNVERIFIED",
+                )
+            )
+
+        if self.domain_record:
+            rows.append(
+                (
+                    f"XRPScan domain record: {self.domain_record}",
+                    f"https://{self.domain_record}",
+                    "VERIFIED",
+                )
+            )
+
+        if self.parent_label:
+            parent_url = (
+                f"https://{self.parent_domain}"
+                if self.parent_domain
+                else (
+                    f"https://xrpscan.com/account/{self.parent_account}"
+                    if self.parent_account
+                    else account_url
+                )
+            )
+            suffix = f" ({self.parent_desc})" if self.parent_desc else ""
+            rows.append(
+                (
+                    f"XRPScan parent label: {self.parent_label}{suffix}",
+                    parent_url,
+                    "VERIFIED" if self.parent_verified else "UNVERIFIED",
+                )
+            )
+
+        return rows
 
 
 @dataclass(frozen=True)
@@ -96,8 +179,20 @@ def should_search_address(web: str, record: EnsRecord | None) -> bool:
     raise ValueError(f"unknown web mode {web!r}; expected one of {', '.join(WEB_MODES)}")
 
 
+def should_search_xrp(web: str, identity: XrpIdentity | None) -> bool:
+    """XRP DuckDuckGo searches run only when there is an on-chain domain pivot."""
+
+    if web == "all":
+        return True
+    if web == "pivots":
+        return bool(identity and identity.domain_record)
+    if web == "none":
+        return False
+    raise ValueError(f"unknown web mode {web!r}; expected one of {', '.join(WEB_MODES)}")
+
+
 def read_targets(path: Path = MASTER_CSV, limit: int | None = DEFAULT_LIMIT) -> list[Target]:
-    """Return the first ``limit`` EVM wallets from the master CSV, or all of them."""
+    """Return EVM and classic XRP wallets from the master CSV."""
     if not path.exists():
         raise SystemExit(f"error: {path} not found; run scripts\\run_pipeline.py first")
 
@@ -105,14 +200,22 @@ def read_targets(path: Path = MASTER_CSV, limit: int | None = DEFAULT_LIMIT) -> 
     with path.open(newline="", encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
             address = (row.get("Wallet") or "").strip()
-            if not _EVM_ADDRESS.match(address):
+            if _EVM_ADDRESS.match(address):
+                kind = "evm"
+                normalized = Web3.to_checksum_address(address)
+            elif _XRP_ADDRESS.match(address):
+                kind = "xrp"
+                normalized = address
+            else:
                 continue
+
             targets.append(
                 Target(
-                    address=Web3.to_checksum_address(address),
+                    address=normalized,
                     best_usd=(row.get("Best Total USD") or "").strip(),
                     networks=(row.get("Networks") or "").strip(),
                     status=(row.get("Status") or "").strip(),
+                    kind=kind,
                 )
             )
             if limit is not None and len(targets) >= limit:
@@ -155,8 +258,103 @@ def enrich_ens(ens: ENS, address: str) -> EnsRecord | None:
     )
 
 
+def _name_value(value: object, key: str) -> str:
+    if isinstance(value, dict):
+        return str(value.get(key) or "").strip()
+    if isinstance(value, str):
+        return value.strip()
+    return ""
+
+
+def _name_verified(value: object) -> bool:
+    return bool(value.get("verified")) if isinstance(value, dict) else False
+
+
+def _decode_domain(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    if "." in text and " " not in text:
+        return text
+    try:
+        raw = bytes.fromhex(text)
+    except ValueError:
+        return ""
+    decoded = raw.decode("utf-8", errors="replace").strip("\x00").strip()
+    return decoded if "." in decoded and " " not in decoded else ""
+
+
+def parse_xrp_identity(address: str, payload: dict) -> XrpIdentity:
+    """Turn XRPScan's account labels and settings into identity findings."""
+
+    account = payload.get("accountName") or {}
+    parent = payload.get("parentName") or {}
+    settings = payload.get("settings") or {}
+
+    label = _name_value(account, "name") or _name_value(account, "username")
+    parent_label = _name_value(parent, "name") or _name_value(parent, "username")
+
+    return XrpIdentity(
+        address=address,
+        label=label,
+        label_desc=_name_value(account, "desc"),
+        label_domain=_name_value(account, "domain"),
+        label_twitter=_name_value(account, "twitter").lstrip("@"),
+        label_verified=_name_verified(account),
+        parent_label=parent_label,
+        parent_desc=_name_value(parent, "desc"),
+        parent_domain=_name_value(parent, "domain"),
+        parent_account=_name_value(parent, "account"),
+        parent_verified=_name_verified(parent),
+        domain_record=_decode_domain(
+            settings.get("Domain") if isinstance(settings, dict) else ""
+        ),
+    )
+
+
+def fetch_xrp_identity(address: str) -> XrpIdentity:
+    """Read one XRP account's XRPScan label/domain with bounded retries."""
+
+    last_error: object = None
+    for attempt in range(3):
+        try:
+            response = requests.get(
+                XRPSCAN_ACCOUNT_URL.format(address=address),
+                timeout=20,
+                headers={"User-Agent": "wallet-analyzer/1.0 (read-only public data)"},
+            )
+        except requests.RequestException as error:
+            last_error = error
+        else:
+            if response.status_code in (429, 500, 502, 503, 504):
+                last_error = RuntimeError(f"HTTP {response.status_code}")
+            else:
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    raise RuntimeError("XRPScan returned an unexpected account payload")
+                return parse_xrp_identity(address, payload)
+
+        if attempt < 2:
+            time.sleep(0.8 * (2**attempt))
+
+    raise RuntimeError(f"XRPScan account lookup failed: {last_error}")
+
+
 def search_address(address: str, results: int = SEARCH_RESULTS) -> list[SearchHit]:
-    """Run the DuckDuckGo pivot, keeping only hits that name the address.
+    return _search_queries(address, SEARCH_QUERIES, results)
+
+
+def search_xrp_address(address: str, results: int = SEARCH_RESULTS) -> list[SearchHit]:
+    return _search_queries(address, XRP_SEARCH_QUERIES, results)
+
+
+def _search_queries(
+    address: str,
+    templates: tuple[str, ...],
+    results: int = SEARCH_RESULTS,
+) -> list[SearchHit]:
+    """Run a DuckDuckGo pivot, keeping only hits that name the address.
 
     A bare ``"<address> wallet"`` query returns unrelated filler when nothing
     matches, so each candidate is checked against the address and only
@@ -165,7 +363,7 @@ def search_address(address: str, results: int = SEARCH_RESULTS) -> list[SearchHi
     hits: dict[str, SearchHit] = {}
     failures: list[str] = []
 
-    for template in SEARCH_QUERIES:
+    for template in templates:
         query = template.format(address=address)
         try:
             # duckduckgo-search prints a rename notice and installs its own
@@ -186,7 +384,7 @@ def search_address(address: str, results: int = SEARCH_RESULTS) -> list[SearchHi
 
         time.sleep(SEARCH_DELAY)
 
-    if failures and len(failures) == len(SEARCH_QUERIES):
+    if failures and len(failures) == len(templates):
         raise RuntimeError("; ".join(failures))
 
     return list(hits.values())[:results]
@@ -253,6 +451,33 @@ def store_findings(
     )
 
 
+def store_findings_typed(
+    db,
+    address: str,
+    tool: str,
+    rows: list[tuple[str, str | None, str]],
+) -> None:
+    """Replace rows for ``tool`` when each row carries its own confidence."""
+
+    db.execute(
+        "DELETE FROM osint_findings WHERE address = ? AND tool = ?", (address, tool)
+    )
+    if not rows:
+        return
+
+    now = utc_now()
+    db.executemany(
+        """
+        INSERT INTO osint_findings (address, tool, finding, url, confidence, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (address, tool, finding, url, confidence, now)
+            for finding, url, confidence in rows
+        ],
+    )
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -296,6 +521,7 @@ def run(
     db = init_db()
 
     found_ens = 0
+    found_xrp = 0
     total_hits = 0
     skipped = 0
     errors = 0
@@ -318,32 +544,65 @@ def run(
             failures: list[str] = []
 
             record: EnsRecord | None = None
-            try:
-                record = enrich_ens(ens, target.address)
-            except Exception as error:  # noqa: BLE001 - report, never treat as "no name"
-                failures.append(f"ENS {type(error).__name__}: {str(error)[:90]}")
-                print(f"      ENS      : ERROR ({type(error).__name__}: {str(error)[:90]})")
-            else:
-                if record is None:
-                    print("      ENS      : no reverse record")
-                else:
-                    found_ens += 1
-                    print(f"      ENS      : {record.name}")
-                    for label, value in (
-                        ("twitter", record.twitter),
-                        ("email", record.email),
-                        ("url", record.url),
-                    ):
-                        if value:
-                            print(f"                 {label}: {value}")
-
+            xrp_identity: XrpIdentity | None = None
             hits: list[SearchHit] = []
-            search_enabled = should_search_address(web, record)
-            if not search_enabled:
-                print("      DDG      : skipped (no ENS pivot)")
+            search_enabled = False
+            search_reason = "no ENS pivot"
+
+            if target.kind == "xrp":
+                print("      chain    : XRP")
+                try:
+                    xrp_identity = fetch_xrp_identity(target.address)
+                except Exception as error:  # noqa: BLE001 - report, never guess
+                    failures.append(
+                        f"XRPScan {type(error).__name__}: {str(error)[:90]}"
+                    )
+                    print(
+                        f"      XRPScan  : ERROR ({type(error).__name__}: {str(error)[:90]})"
+                    )
+                else:
+                    rows = xrp_identity.finding_rows()
+                    store_findings_typed(db, target.address, "XRPScan", rows)
+                    if rows:
+                        found_xrp += 1
+                        for finding, url, _confidence in rows:
+                            print(f"      XRPScan  : {finding}")
+                            if url:
+                                print(f"                 {url}")
+                    else:
+                        print("      XRPScan  : no label or domain record")
+                search_enabled = should_search_xrp(web, xrp_identity)
+                search_reason = "XRPScan identity only"
             else:
                 try:
-                    hits = search_address(target.address)
+                    record = enrich_ens(ens, target.address)
+                except Exception as error:  # noqa: BLE001 - report, never treat as "no name"
+                    failures.append(f"ENS {type(error).__name__}: {str(error)[:90]}")
+                    print(f"      ENS      : ERROR ({type(error).__name__}: {str(error)[:90]})")
+                else:
+                    if record is None:
+                        print("      ENS      : no reverse record")
+                    else:
+                        found_ens += 1
+                        print(f"      ENS      : {record.name}")
+                        for label, value in (
+                            ("twitter", record.twitter),
+                            ("email", record.email),
+                            ("url", record.url),
+                        ):
+                            if value:
+                                print(f"                 {label}: {value}")
+                search_enabled = should_search_address(web, record)
+
+            if not search_enabled:
+                print(f"      DDG      : skipped ({search_reason})")
+            else:
+                try:
+                    hits = (
+                        search_xrp_address(target.address)
+                        if target.kind == "xrp"
+                        else search_address(target.address)
+                    )
                 except Exception as error:  # noqa: BLE001 - same rule as ENS
                     failures.append(f"search {type(error).__name__}: {str(error)[:90]}")
                     print(f"      DDG      : ERROR ({type(error).__name__}: {str(error)[:90]})")
@@ -398,7 +657,7 @@ def run(
 
     print(
         f"summary: {len(targets)} target(s) · ENS names {found_ens} · "
-        f"search results {total_hits} corroborated · "
+        f"XRP identities {found_xrp} · search results {total_hits} corroborated · "
         f"skipped {skipped} · errors {errors}"
         + (" · stopped early (DDG blocked)" if stopped_early else "")
     )

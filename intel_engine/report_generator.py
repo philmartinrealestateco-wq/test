@@ -60,22 +60,33 @@ def cell(value: object) -> str:
     return str(value).replace("|", "\\|").replace("\n", " ")
 
 
+def _address_filter(column: str, address: str) -> tuple[str, tuple]:
+    """EVM addresses compare case-insensitively; Base58 ones must not."""
+
+    if address.lower().startswith("0x"):
+        return f"lower({column}) = lower(?)", (address,)
+    return f"{column} = ?", (address,)
+
+
 def load_wallet(db, address: str):
+    clause, params = _address_filter("address", address)
     return db.execute(
-        "SELECT address, ens_name, ens_twitter, ens_email, last_scanned FROM wallets WHERE lower(address) = ?",
-        (address.lower(),),
+        f"SELECT address, ens_name, ens_twitter, ens_email, last_scanned "
+        f"FROM wallets WHERE {clause}",
+        params,
     ).fetchone()
 
 
 def load_findings(db, address: str, tool: str) -> list:
+    clause, params = _address_filter("address", address)
     return db.execute(
-        """
+        f"""
         SELECT finding, url, confidence, timestamp
         FROM osint_findings
-        WHERE lower(address) = ? AND tool = ?
+        WHERE {clause} AND tool = ?
         ORDER BY finding
         """,
-        (address.lower(), tool),
+        (*params, tool),
     ).fetchall()
 
 
@@ -103,30 +114,32 @@ def _newest_run(rows: list) -> list[tuple]:
 
 def load_breach_run(db, address: str) -> list[tuple]:
     """The newest breach lookup for this wallet, as (row, payload) pairs."""
+    clause, params = _address_filter("address", address)
     rows = db.execute(
-        """
+        f"""
         SELECT finding, url, confidence, timestamp
         FROM osint_findings
-        WHERE lower(address) = lower(?) AND tool = 'BreachAPI'
+        WHERE {clause} AND tool = 'BreachAPI'
           AND category = 'breach_exposure'
         ORDER BY rowid
         """,
-        (address.lower(),),
+        params,
     ).fetchall()
     return _newest_run(rows)
 
 
 def load_ownership(db, address: str) -> dict | None:
     """The newest ownership proof recorded for this wallet."""
+    clause, params = _address_filter("address", address)
     rows = db.execute(
-        """
+        f"""
         SELECT finding, confidence, timestamp
         FROM osint_findings
-        WHERE lower(address) = lower(?) AND tool = 'SelfAudit'
+        WHERE {clause} AND tool = 'SelfAudit'
           AND category = 'ownership_verification'
         ORDER BY rowid
         """,
-        (address.lower(),),
+        params,
     ).fetchall()
 
     for row in reversed(rows):
@@ -138,16 +151,17 @@ def load_ownership(db, address: str) -> dict | None:
 
 def load_social_footprint(db, address: str) -> list:
     """One row per profile URL, carrying every tool that reported it."""
+    clause, params = _address_filter("address", address)
     rows = db.execute(
-        """
+        f"""
         SELECT tool, finding, url, confidence
         FROM osint_findings
-        WHERE lower(address) = lower(?)
+        WHERE {clause}
           AND tool IN ('Sherlock', 'Maigret')
           AND url IS NOT NULL AND TRIM(url) <> ''
         ORDER BY finding
         """,
-        (address.lower(),),
+        params,
     ).fetchall()
 
     groups: dict[str, list] = {}
@@ -174,15 +188,16 @@ def load_social_footprint(db, address: str) -> list:
 
 def load_flow_evidence(db, address: str) -> list:
     """Every stored FlowLens transfer for this wallet, newest first."""
+    clause, params = _address_filter("address", address)
     return db.execute(
-        """
+        f"""
         SELECT chain_id, tx_hash, event_index, block_number, block_time, direction,
                counterparty, amount, asset, kind, provider, source_url, coverage
         FROM flow_evidence
-        WHERE lower(address) = lower(?)
+        WHERE {clause}
         ORDER BY block_time DESC, event_index DESC
         """,
-        (address.lower(),),
+        params,
     ).fetchall()
 
 
@@ -310,6 +325,7 @@ def build_markdown(db, address: str) -> str:
     flow = load_flow_evidence(db, address)
     ownership = load_ownership(db, address)
     breach_run = load_breach_run(db, address)
+    xrp_identity = load_findings(db, address, "XRPScan")
 
     ens_url = next((row["url"] for row in ens_records if row["url"]), None)
     holehe_blocked = any(row["confidence"] == "ERROR" for row in holehe)
@@ -353,6 +369,22 @@ def build_markdown(db, address: str) -> str:
         f"| Breach records (latest run) | {breach_hits} |",
         "",
     ]
+
+    if xrp_identity:
+        lines += ["## XRP On-Chain Identity", ""]
+        lines += ["| Record | URL | Confidence |", "| --- | --- | --- |"]
+        for row in xrp_identity:
+            url = row["url"] or ""
+            link = f"[{cell(url)}]({url})" if url else "&mdash;"
+            lines.append(
+                f"| {cell(row['finding'])} | {link} | {cell(row['confidence'])} |"
+            )
+        lines += [
+            "",
+            '<p class="lede">XRPScan labels and domain records describe the account, '
+            "not proof that a person controls it.</p>",
+            "",
+        ]
 
     lines += ["## Risk & Sanctions Screening", ""]
     if sanctions:
@@ -693,12 +725,16 @@ def wallets_with_findings(db) -> list:
         WHERE (w.ens_name IS NOT NULL AND TRIM(w.ens_name) <> '')
            OR EXISTS (
                 SELECT 1 FROM osint_findings f
-                WHERE lower(f.address) = lower(w.address)
+                WHERE (
+                    (w.address LIKE '0x%' AND lower(f.address) = lower(w.address))
+                    OR (w.address NOT LIKE '0x%' AND f.address = w.address)
+                )
                   AND (f.confidence IS NULL OR upper(f.confidence) <> 'ERROR')
            )
            OR EXISTS (
                 SELECT 1 FROM flow_evidence e
-                WHERE lower(e.address) = lower(w.address)
+                WHERE (w.address LIKE '0x%' AND lower(e.address) = lower(w.address))
+                   OR (w.address NOT LIKE '0x%' AND e.address = w.address)
            )
         ORDER BY lower(w.address)
         """
