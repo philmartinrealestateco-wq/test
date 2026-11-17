@@ -2,6 +2,8 @@ requests
 web3
 # self_audit verifies EIP-191 challenges directly; web3 already installs this.
 eth-account
+# Free, keyless email breach checks used by self_audit.
+xposedornot
 # web3 8.0.0 vendors an `ens` module that hands a list to pyunormalize.NFC, which
 # only accepts that shape up to 15.x; 16+ expects a str and raises AttributeError.
 pyunormalize==15.0.0

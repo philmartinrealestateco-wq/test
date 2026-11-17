@@ -1,4 +1,6 @@
-"""Self-audit: prove control of a wallet, then check one email for breach exposure.
+"""Self-audit: prove control of a wallet, then check one email on XposedOrNot.
+
+The breach lookup uses XposedOrNot's free, keyless API.
 
 Ownership is proven with an EIP-191 ``personal_sign`` over a one-time challenge
 that names the address, the email and a random nonce, so a signature from an
@@ -207,9 +209,7 @@ def audit(
     email: str,
     verification: dict,
     *,
-    lookup_fn=breach_adapter.lookup,
-    api_key: str | None = None,
-    provider: str | None = None,
+    lookup_fn=breach_adapter.check_email,
     run_id: str | None = None,
     now: str | None = None,
 ) -> tuple[breach_adapter.BreachResult | None, breach_adapter.BreachError | None]:
@@ -220,21 +220,19 @@ def audit(
     ensure_wallet(db, address)
     store_ownership(db, address, run_id, verification, now)
 
-    provider_label = "unknown"
     try:
-        provider_name = provider or breach_adapter.provider_from_env()
-        provider_label = breach_adapter.PROVIDERS.get(provider_name)
-        if provider_label is None:
-            raise breach_adapter.BreachConfigError(
-                f"unknown provider {provider_name!r}; "
-                f"supported: {', '.join(sorted(breach_adapter.PROVIDERS))}"
-            )
-
-        key = api_key if api_key is not None else breach_adapter.api_key_from_env()
-        result = lookup_fn(email, key, provider=provider_name)
+        result = lookup_fn(email)
         store_breach(db, address, result, run_id, now)
     except breach_adapter.BreachError as error:
-        store_failure(db, address, email, provider_label, str(error), run_id, now)
+        store_failure(
+            db,
+            address,
+            email,
+            breach_adapter.PROVIDER,
+            str(error),
+            run_id,
+            now,
+        )
         return None, error
 
     return result, None
@@ -258,8 +256,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        breach_adapter.provider_from_env()
-        breach_adapter.api_key_from_env()
+        breach_adapter.ensure_available()
     except breach_adapter.BreachConfigError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2

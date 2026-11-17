@@ -1,33 +1,24 @@
-"""Breach exposure adapter: one email lookup against a public breach API.
+"""Breach exposure adapter: one keyless email lookup against XposedOrNot.
 
-Only the Have I Been Pwned v3 ``breachedaccount`` endpoint is implemented. The
-provider table is the seam for a second service (DeHashed, LeakCheck): each
-provider gets its own request and parser, while the records written to
-``osint_findings`` keep the same shape.
+``XposedOrNot().check_email`` is the free entry point and returns breach names
+only. ``breach_analytics`` adds the year, record count, exposed data classes and
+the per-breach verified flag, so a hit needs both calls. A clean email returns
+no names and is never sent to analytics: XposedOrNot answers a clean lookup with
+``ExposedBreaches: null``, which the client's model factory cannot parse.
 
-Three outcomes stay distinct: ``hit`` (breaches were returned), ``clean`` (the
-API answered and knew no breach) and ``BreachAPIError`` (no usable answer).
-A failed call must never be summarised as zero breaches.
+A failed call stays an error. It must never be summarised as zero breaches.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import re
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from urllib.parse import quote
 
-import requests
-from requests.exceptions import RequestException
-
-HIBP_BASE = "https://haveibeenpwned.com/api/v3"
-HIBP_BREACH_PAGE = "https://haveibeenpwned.com/PwnedWebsites#{name}"
-PROVIDERS = {"hibp": "HIBP"}
-DEFAULT_PROVIDER = "hibp"
-DEFAULT_TIMEOUT = 20
-USER_AGENT = "intel_engine-self-audit/1.0"
+PROVIDER = "XposedOrNot"
+BREACH_PAGE = "https://xposedornot.com/breach/{name}"
+DEFAULT_TIMEOUT = 30.0
 
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -37,21 +28,11 @@ class BreachError(RuntimeError):
 
 
 class BreachConfigError(BreachError):
-    """The environment is missing the key or names an unknown provider."""
+    """The XposedOrNot client is not installed."""
 
 
 class BreachAPIError(BreachError):
-    """The breach API refused the request or answered with something unusable."""
-
-    def __init__(
-        self,
-        message: str,
-        status: int | None = None,
-        retry_after: str | None = None,
-    ):
-        super().__init__(message)
-        self.status = status
-        self.retry_after = retry_after
+    """XposedOrNot refused the request or returned an unusable payload."""
 
 
 @dataclass(frozen=True)
@@ -62,7 +43,7 @@ class Breach:
     pwn_count: int | None
     data_classes: tuple[str, ...]
     is_verified: bool
-    url: str
+    url: str | None = None
 
 
 @dataclass
@@ -89,138 +70,163 @@ def mask_email(value: str | None) -> str:
     return f"{local[:1]}***@{domain}"
 
 
-def provider_from_env(environ: Mapping[str, str] | None = None) -> str:
-    source = os.environ if environ is None else environ
-    name = (source.get("BREACH_API_PROVIDER") or DEFAULT_PROVIDER).strip().lower()
-    if name not in PROVIDERS:
+def ensure_available() -> None:
+    """Fail before prompting when the optional client is missing."""
+    try:
+        import xposedornot  # noqa: F401
+    except ImportError as error:
         raise BreachConfigError(
-            f"unknown BREACH_API_PROVIDER {name!r}; supported: {', '.join(sorted(PROVIDERS))}"
-        )
-    return name
+            "xposedornot is not installed; run: pip install xposedornot"
+        ) from error
 
 
-def api_key_from_env(environ: Mapping[str, str] | None = None) -> str:
-    source = os.environ if environ is None else environ
-    key = (source.get("BREACH_API_KEY") or "").strip()
-    if not key:
-        raise BreachConfigError("BREACH_API_KEY is not set")
-    return key
+def _client():
+    ensure_available()
+    from xposedornot import XposedOrNot
+
+    return XposedOrNot(timeout=DEFAULT_TIMEOUT)
 
 
-def lookup(
-    email: str,
-    api_key: str,
-    *,
-    provider: str = DEFAULT_PROVIDER,
-    session=None,
-    timeout: int = DEFAULT_TIMEOUT,
-    base_url: str = HIBP_BASE,
-) -> BreachResult:
-    """Check one email and return hit or clean; raise for anything else."""
-    normalized = normalize_email(email)
-    if provider not in PROVIDERS:
-        raise BreachConfigError(f"unknown provider {provider!r}")
-    return _lookup_hibp(normalized, api_key, session, timeout, base_url)
-
-
-def _lookup_hibp(
-    email: str,
-    api_key: str,
-    session,
-    timeout: int,
-    base_url: str,
-) -> BreachResult:
-    client = requests if session is None else session
-    url = f"{base_url}/breachedaccount/{quote(email, safe='')}"
-
+def _is_not_found(error: Exception) -> bool:
     try:
-        response = client.get(
-            url,
-            params={"truncateResponse": "false"},
-            headers={
-                "accept": "application/json",
-                "hibp-api-key": api_key,
-                "user-agent": USER_AGENT,
-            },
-            timeout=timeout,
-        )
-    except RequestException as error:
-        raise BreachAPIError(f"the request failed: {error}") from error
+        from xposedornot import NotFoundError
+    except ImportError:
+        return False
+    return isinstance(error, NotFoundError)
 
-    if response.status_code == 404:
-        return BreachResult(email=email, provider=PROVIDERS["hibp"], status="clean")
 
-    if response.status_code == 401:
-        raise BreachAPIError("HTTP 401: the API rejected BREACH_API_KEY", status=401)
+def _field(entry: object, name: str, default=None):
+    """Read one field from a package dataclass or a raw API dict."""
+    if isinstance(entry, dict):
+        return entry.get(name, default)
+    return getattr(entry, name, default)
 
-    if response.status_code == 429:
-        retry = response.headers.get("Retry-After")
-        suffix = f"; retry after {retry}s" if retry else ""
-        raise BreachAPIError(
-            f"HTTP 429: rate limited{suffix}",
-            status=429,
-            retry_after=retry,
-        )
 
-    if response.status_code != 200:
-        detail = (response.text or "").strip()[:200]
-        raise BreachAPIError(
-            f"HTTP {response.status_code}: {detail or 'no detail'}",
-            status=response.status_code,
-        )
+def _flatten(value):
+    for item in value:
+        if isinstance(item, (list, tuple)):
+            yield from _flatten(item)
+        else:
+            yield item
 
+
+def _clean_names(value: object) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+
+    names: list[str] = []
+    seen: set[str] = set()
+    for item in _flatten(value):
+        name = str(item or "").strip()
+        if not name or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        names.append(name)
+    return names
+
+
+def _split_classes(value: object) -> tuple[str, ...]:
+    parts = [part.strip() for part in str(value or "").split(";")]
+    return tuple(dict.fromkeys(part for part in parts if part))
+
+
+def _as_int(value: object) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
     try:
-        payload = response.json()
-    except ValueError as error:
-        raise BreachAPIError(f"the API returned invalid JSON: {error}") from error
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
-    if not isinstance(payload, list):
-        raise BreachAPIError("the API returned an unexpected payload (expected a list)")
 
-    breaches = _parse_hibp(payload)
-    if not breaches:
-        raise BreachAPIError(
-            f"the API returned {len(payload)} hit(s) but none could be parsed"
+def _is_verified(value: object) -> bool:
+    """XposedOrNot sends "Yes"/"No"; bool("No") would be True."""
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"yes", "true", "1", "verified"}
+
+
+def _breach_url(name: str) -> str:
+    return BREACH_PAGE.format(name=quote(name, safe=""))
+
+
+def _breach_from(name: str, entry: object | None) -> Breach:
+    if entry is None:
+        return Breach(
+            name=name,
+            title=name,
+            breach_date="",
+            pwn_count=None,
+            data_classes=(),
+            is_verified=False,
+            url=_breach_url(name),
         )
 
-    return BreachResult(
-        email=email,
-        provider=PROVIDERS["hibp"],
-        status="hit",
-        breaches=breaches,
+    return Breach(
+        name=name,
+        title=name,
+        breach_date=str(_field(entry, "xposed_date", "") or ""),
+        pwn_count=_as_int(_field(entry, "xposed_records")),
+        data_classes=_split_classes(_field(entry, "xposed_data", "")),
+        is_verified=_is_verified(_field(entry, "verified", False)),
+        url=_breach_url(name),
     )
 
 
-def _parse_hibp(payload: list) -> list[Breach]:
-    breaches: list[Breach] = []
-    for item in payload:
-        if not isinstance(item, dict):
-            continue
+def check_email(email: str, *, client=None) -> BreachResult:
+    """Check one email and return hit or clean; raise for anything else."""
+    normalized = normalize_email(email)
 
-        name = str(item.get("Name") or item.get("Title") or "").strip()
-        if not name:
-            continue
+    if client is None:
+        client = _client()
 
-        classes = item.get("DataClasses")
-        count = item.get("PwnCount")
-
-        breaches.append(
-            Breach(
-                name=name,
-                title=str(item.get("Title") or name),
-                breach_date=str(item.get("BreachDate") or ""),
-                pwn_count=count if isinstance(count, int) else None,
-                data_classes=(
-                    tuple(str(entry) for entry in classes)
-                    if isinstance(classes, list)
-                    else ()
-                ),
-                is_verified=bool(item.get("IsVerified")),
-                url=HIBP_BREACH_PAGE.format(name=quote(name, safe="")),
+    try:
+        response = client.check_email(normalized)
+    except BreachError:
+        raise
+    except Exception as error:
+        if _is_not_found(error):
+            return BreachResult(
+                email=normalized,
+                provider=PROVIDER,
+                status="clean",
             )
+        raise BreachAPIError(f"XposedOrNot check_email failed: {error}") from error
+
+    names = _clean_names(_field(response, "breaches", None))
+    if not names:
+        return BreachResult(
+            email=normalized,
+            provider=PROVIDER,
+            status="clean",
         )
 
-    return breaches
+    try:
+        analytics = client.breach_analytics(normalized)
+    except BreachError:
+        raise
+    except Exception as error:
+        raise BreachAPIError(
+            f"XposedOrNot breach_analytics failed: {error}"
+        ) from error
+
+    details: dict[str, object] = {}
+    for entry in _field(analytics, "breaches_details", None) or []:
+        key = str(_field(entry, "breach", "") or "").strip().lower()
+        if key:
+            details[key] = entry
+
+    breaches = [
+        _breach_from(name, details.get(name.lower()))
+        for name in names
+    ]
+
+    return BreachResult(
+        email=normalized,
+        provider=PROVIDER,
+        status="hit",
+        breaches=breaches,
+    )
 
 
 def encode_finding(payload: dict) -> str:

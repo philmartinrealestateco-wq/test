@@ -332,7 +332,7 @@ def build_markdown(db, address: str) -> str:
         f'({subject}). Every value below comes from <code>intel.db</code>; nothing was '
         "re-verified for this document.</p>",
         "",
-        f'<p class="meta">Generated {utc_now()} &middot; sources: ENS, DuckDuckGo, sherlock, maigret, holehe, OpenSanctions, FlowLens, HIBP breach lookup, EIP-191 self-audit</p>',
+        f'<p class="meta">Generated {utc_now()} &middot; sources: ENS, DuckDuckGo, sherlock, maigret, holehe, OpenSanctions, FlowLens, XposedOrNot breach lookup, EIP-191 self-audit</p>',
         "",
         "## Target Overview",
         "",

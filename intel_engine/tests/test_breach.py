@@ -1,13 +1,13 @@
-"""Tests for the breach adapter, self-audit storage and the PDF section."""
+"""Tests for the XposedOrNot adapter, self-audit storage and the PDF section."""
 
 from __future__ import annotations
 
-import json
 import sqlite3
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -15,7 +15,6 @@ import report_generator
 import self_audit
 from adapters import breach_adapter
 from adapters.breach_adapter import (
-    Breach,
     BreachAPIError,
     BreachConfigError,
     BreachResult,
@@ -29,71 +28,68 @@ EMAIL = "test@example.com"
 NOW = "2026-11-17 12:00:00 UTC"
 
 
-class FakeResponse:
-    def __init__(self, status_code, payload=None, headers=None, text=None):
-        self.status_code = status_code
-        self._payload = payload
-        self.headers = headers or {}
-        self.text = (
-            text
-            if text is not None
-            else ("" if payload is None else json.dumps(payload))
-        )
+class FakeClient:
+    """Mimics the raw XposedOrNot response shape, not just the dataclasses."""
 
-    def json(self):
-        if self._payload is None:
-            raise ValueError("no json")
-        return self._payload
+    def __init__(
+        self,
+        names=None,
+        details=None,
+        email_error=None,
+        analytics_error=None,
+    ):
+        self.names = list(names or [])
+        self.details = list(details or [])
+        self.email_error = email_error
+        self.analytics_error = analytics_error
+        self.email_calls = 0
+        self.analytics_calls = 0
 
+    def check_email(self, email):
+        self.email_calls += 1
+        if self.email_error is not None:
+            raise self.email_error
+        return {"breaches": list(self.names), "email": email, "status": "success"}
 
-class FakeSession:
-    def __init__(self, response):
-        self.response = response
-        self.calls: list[tuple[str, dict]] = []
-
-    def get(self, url, **kwargs):
-        self.calls.append((url, kwargs))
-        return self.response
-
-
-def hibp_payload() -> list[dict]:
-    return [
-        {
-            "Name": "Adobe",
-            "Title": "Adobe",
-            "BreachDate": "2013-10-04",
-            "PwnCount": 152445165,
-            "DataClasses": ["Email addresses", "Passwords"],
-            "IsVerified": True,
-        },
-        {
-            "Name": "LinkedIn",
-            "Title": "LinkedIn",
-            "BreachDate": "2012-05-05",
-            "PwnCount": 164611595,
-            "DataClasses": ["Email addresses"],
-            "IsVerified": False,
-        },
-    ]
+    def breach_analytics(self, email):
+        self.analytics_calls += 1
+        if self.analytics_error is not None:
+            raise self.analytics_error
+        return {"breaches_details": list(self.details)}
 
 
-def hit_result(email: str = EMAIL) -> BreachResult:
-    return BreachResult(
-        email=email,
-        provider="HIBP",
-        status="hit",
-        breaches=[
-            Breach(
-                name="Adobe",
-                title="Adobe",
-                breach_date="2013-10-04",
-                pwn_count=152445165,
-                data_classes=("Email addresses", "Passwords"),
-                is_verified=True,
-                url="https://haveibeenpwned.com/PwnedWebsites#Adobe",
-            )
+def detail(
+    name,
+    date="2013",
+    data="Email addresses;Passwords",
+    records=152445165,
+    verified="Yes",
+):
+    return {
+        "breach": name,
+        "xposed_date": date,
+        "xposed_data": data,
+        "xposed_records": records,
+        "verified": verified,
+    }
+
+
+def hit_client():
+    return FakeClient(
+        names=["Adobe", "LinkedIn"],
+        details=[
+            detail("Adobe", "2013", "Email addresses;Passwords", 152445165, "Yes"),
+            detail("LinkedIn", "2012", "Email addresses", 164611595, "No"),
         ],
     )
+
+
+def hit_result():
+    return breach_adapter.check_email(EMAIL, client=hit_client())
+
+
+def clean_result():
+    return BreachResult(email=EMAIL, provider=breach_adapter.PROVIDER, status="clean")
 
 
 def memory_db() -> sqlite3.Connection:
@@ -130,8 +126,6 @@ def run_audit(db, verification, lookup_fn, run_id, now=NOW):
         EMAIL,
         verification,
         lookup_fn=lookup_fn,
-        api_key="test-key",
-        provider="hibp",
         run_id=run_id,
         now=now,
     )
@@ -139,12 +133,14 @@ def run_audit(db, verification, lookup_fn, run_id, now=NOW):
 
 class LookupTests(unittest.TestCase):
     def test_a_hit_is_parsed_into_breaches(self):
-        session = FakeSession(FakeResponse(200, hibp_payload()))
-        result = breach_adapter.lookup(EMAIL, "key", session=session)
+        result = breach_adapter.check_email(EMAIL, client=hit_client())
 
         self.assertEqual(result.status, "hit")
-        self.assertEqual([breach.name for breach in result.breaches], ["Adobe", "LinkedIn"])
-        self.assertEqual(result.breaches[0].breach_date, "2013-10-04")
+        self.assertEqual(
+            [breach.name for breach in result.breaches],
+            ["Adobe", "LinkedIn"],
+        )
+        self.assertEqual(result.breaches[0].breach_date, "2013")
         self.assertEqual(result.breaches[0].pwn_count, 152445165)
         self.assertEqual(
             result.breaches[0].data_classes,
@@ -152,76 +148,95 @@ class LookupTests(unittest.TestCase):
         )
         self.assertEqual(
             result.breaches[0].url,
-            "https://haveibeenpwned.com/PwnedWebsites#Adobe",
+            "https://xposedornot.com/breach/Adobe",
+        )
+        self.assertTrue(result.breaches[0].is_verified)
+        self.assertFalse(result.breaches[1].is_verified)
+
+    def test_the_nested_free_api_shape_is_flattened(self):
+        client = FakeClient(
+            names=[["Adobe", "LinkedIn"]],
+            details=[detail("Adobe"), detail("LinkedIn")],
+        )
+        result = breach_adapter.check_email(EMAIL, client=client)
+
+        self.assertEqual(
+            [breach.name for breach in result.breaches],
+            ["Adobe", "LinkedIn"],
         )
 
-    def test_the_request_carries_the_key_and_a_user_agent(self):
-        session = FakeSession(FakeResponse(200, hibp_payload()))
-        breach_adapter.lookup("Test@Example.com", "secret", session=session)
+    def test_a_clean_email_is_not_sent_to_analytics(self):
+        client = FakeClient(names=[])
+        result = breach_adapter.check_email(EMAIL, client=client)
 
-        url, kwargs = session.calls[0]
-        self.assertIn("test%40example.com", url)
-        self.assertEqual(kwargs["headers"]["hibp-api-key"], "secret")
-        self.assertIn("user-agent", kwargs["headers"])
-        self.assertEqual(kwargs["params"], {"truncateResponse": "false"})
-
-    def test_404_is_a_clean_answer_not_an_error(self):
-        result = breach_adapter.lookup(
-            EMAIL,
-            "key",
-            session=FakeSession(FakeResponse(404)),
-        )
         self.assertEqual(result.status, "clean")
         self.assertEqual(result.breaches, [])
+        self.assertEqual(client.email_calls, 1)
+        self.assertEqual(client.analytics_calls, 0)
 
-    def test_401_is_an_error(self):
-        with self.assertRaises(BreachAPIError) as caught:
-            breach_adapter.lookup(
-                EMAIL,
-                "key",
-                session=FakeSession(FakeResponse(401)),
-            )
-        self.assertEqual(caught.exception.status, 401)
-
-    def test_429_keeps_the_retry_hint(self):
-        response = FakeResponse(429, headers={"Retry-After": "3"})
-        with self.assertRaises(BreachAPIError) as caught:
-            breach_adapter.lookup(EMAIL, "key", session=FakeSession(response))
-
-        self.assertEqual(caught.exception.status, 429)
-        self.assertEqual(caught.exception.retry_after, "3")
-        self.assertIn("retry after 3s", str(caught.exception))
-
-    def test_a_hit_with_no_parseable_breach_is_an_error(self):
+    def test_a_check_failure_is_an_error(self):
+        client = FakeClient(email_error=RuntimeError("network down"))
         with self.assertRaises(BreachAPIError):
-            breach_adapter.lookup(
-                EMAIL,
-                "key",
-                session=FakeSession(FakeResponse(200, [])),
-            )
+            breach_adapter.check_email(EMAIL, client=client)
 
-    def test_missing_key_is_a_config_error(self):
-        with self.assertRaises(BreachConfigError):
-            breach_adapter.api_key_from_env({})
+    def test_an_analytics_failure_is_an_error(self):
+        client = FakeClient(
+            names=["Adobe"],
+            analytics_error=AttributeError("null ExposedBreaches"),
+        )
+        with self.assertRaises(BreachAPIError):
+            breach_adapter.check_email(EMAIL, client=client)
+
+    def test_names_without_details_are_kept_as_unverified(self):
+        client = FakeClient(
+            names=["Adobe", "Mystery"],
+            details=[detail("Adobe")],
+        )
+        result = breach_adapter.check_email(EMAIL, client=client)
+
+        mystery = result.breaches[1]
+        self.assertEqual(mystery.name, "Mystery")
+        self.assertEqual(mystery.breach_date, "")
+        self.assertEqual(mystery.data_classes, ())
+        self.assertIsNone(mystery.pwn_count)
+        self.assertFalse(mystery.is_verified)
+        self.assertEqual(
+            mystery.url,
+            "https://xposedornot.com/breach/Mystery",
+        )
+
+    def test_missing_package_is_a_config_error(self):
+        with mock.patch.dict(sys.modules, {"xposedornot": None}):
+            with self.assertRaises(BreachConfigError):
+                breach_adapter.ensure_available()
 
     def test_email_is_normalised_and_masked(self):
         self.assertEqual(breach_adapter.normalize_email(" Test@Example.COM "), EMAIL)
         self.assertEqual(breach_adapter.mask_email(EMAIL), "t***@example.com")
         self.assertEqual(breach_adapter.mask_email(None), "***")
 
-    def test_unverified_breaches_are_stored_as_unverified(self):
-        unverified = BreachResult(
-            email=EMAIL,
-            provider="HIBP",
-            status="hit",
-            breaches=[
-                Breach("X", "X", "", None, (), False, "https://example.test/x")
-            ],
+    def test_classes_are_split_and_deduplicated(self):
+        classes = breach_adapter._split_classes(
+            "Email addresses; Passwords;Email addresses"
         )
-        self.assertEqual(
-            breach_adapter.finding_records(unverified, "run1")[0][2],
-            "UNVERIFIED",
-        )
+        self.assertEqual(classes, ("Email addresses", "Passwords"))
+
+    def test_verified_yes_and_no_are_parsed(self):
+        self.assertTrue(breach_adapter._is_verified("Yes"))
+        self.assertFalse(breach_adapter._is_verified("No"))
+        self.assertTrue(breach_adapter._is_verified(True))
+        self.assertFalse(breach_adapter._is_verified(False))
+
+    def test_finding_records_use_the_xposedornot_provider(self):
+        rows = breach_adapter.finding_records(hit_result(), "run1")
+        payload = breach_adapter.decode_finding(rows[0][0])
+
+        self.assertEqual(payload["provider"], "XposedOrNot")
+        self.assertEqual(payload["name"], "Adobe")
+        self.assertEqual(payload["date"], "2013")
+        self.assertEqual(payload["classes"], ["Email addresses", "Passwords"])
+        self.assertEqual(rows[0][2], "VERIFIED")
+        self.assertEqual(rows[1][2], "UNVERIFIED")
 
 
 class OwnershipTests(unittest.TestCase):
@@ -266,7 +281,7 @@ class AuditTests(unittest.TestCase):
         result, error = run_audit(
             self.db,
             verified(),
-            lambda email, key, provider: hit_result(),
+            lambda email: hit_result(),
             "run1",
         )
 
@@ -283,15 +298,20 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(row["confidence"], "VERIFIED")
         self.assertEqual(
             row["url"],
-            "https://haveibeenpwned.com/PwnedWebsites#Adobe",
+            "https://xposedornot.com/breach/Adobe",
         )
+        self.assertEqual(payload["provider"], "XposedOrNot")
         self.assertEqual(payload["name"], "Adobe")
-        self.assertEqual(payload["date"], "2013-10-04")
+        self.assertEqual(payload["date"], "2013")
         self.assertEqual(payload["email"], EMAIL)
 
     def test_a_clean_answer_is_stored_as_clean(self):
-        clean = BreachResult(email=EMAIL, provider="HIBP", status="clean")
-        run_audit(self.db, verified(), lambda email, key, provider: clean, "run2")
+        run_audit(
+            self.db,
+            verified(),
+            lambda email: clean_result(),
+            "run2",
+        )
 
         row = self.db.execute(
             "SELECT confidence FROM osint_findings WHERE tool = 'BreachAPI'"
@@ -299,8 +319,8 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(row["confidence"], "CLEAN")
 
     def test_a_failed_lookup_is_stored_as_error(self):
-        def fail(email, key, provider):
-            raise BreachAPIError("HTTP 429: rate limited", status=429)
+        def fail(email):
+            raise BreachAPIError("XposedOrNot request failed")
 
         result, error = run_audit(self.db, verified(), fail, "run3")
 
@@ -320,7 +340,7 @@ class AuditTests(unittest.TestCase):
         run_audit(
             self.db,
             bypassed(),
-            lambda email, key, provider: hit_result(),
+            lambda email: hit_result(),
             "run4",
         )
 
@@ -333,7 +353,7 @@ class AuditTests(unittest.TestCase):
         run_audit(
             self.db,
             verified(),
-            lambda email, key, provider: hit_result(),
+            lambda email: hit_result(),
             "run5",
         )
 
@@ -356,7 +376,7 @@ class ReportTests(unittest.TestCase):
         return run_audit(
             self.db,
             verification or verified(),
-            lambda email, key, provider: hit_result(),
+            lambda email: hit_result(),
             "run-report",
         )
 
@@ -366,8 +386,11 @@ class ReportTests(unittest.TestCase):
 
         self.assertIn("## Breach Exposure & Ownership Verification", markdown)
         self.assertIn("Breach exposure is not proof of wallet ownership", markdown)
+        self.assertIn("XposedOrNot", markdown)
         self.assertIn("Adobe", markdown)
-        self.assertIn("2013-10-04", markdown)
+        self.assertIn("2013", markdown)
+        self.assertIn("LinkedIn", markdown)
+        self.assertIn("2012", markdown)
         self.assertIn("t***@example.com", markdown)
         self.assertNotIn(EMAIL, markdown)
         self.assertIn("Ownership verified", markdown)
@@ -380,11 +403,10 @@ class ReportTests(unittest.TestCase):
         self.assertIn("--bypass-signature", markdown)
 
     def test_a_clean_answer_is_not_rendered_as_no_lookup(self):
-        clean = BreachResult(email=EMAIL, provider="HIBP", status="clean")
         run_audit(
             self.db,
             verified(),
-            lambda email, key, provider: clean,
+            lambda email: clean_result(),
             "run-clean",
         )
 
@@ -393,11 +415,8 @@ class ReportTests(unittest.TestCase):
         self.assertNotIn("_No breach lookup has been recorded", markdown)
 
     def test_a_failed_lookup_says_unknown_not_absent(self):
-        def fail(email, key, provider):
-            raise BreachAPIError(
-                "HTTP 401: the API rejected BREACH_API_KEY",
-                status=401,
-            )
+        def fail(email):
+            raise BreachAPIError("XposedOrNot request failed")
 
         run_audit(self.db, verified(), fail, "run-error")
 
@@ -406,11 +425,10 @@ class ReportTests(unittest.TestCase):
         self.assertIn("unknown, not absent", markdown)
 
     def test_the_newest_run_wins(self):
-        clean = BreachResult(email=EMAIL, provider="HIBP", status="clean")
         run_audit(
             self.db,
             verified(),
-            lambda email, key, provider: clean,
+            lambda email: clean_result(),
             "run-old",
             now="2026-11-17 11:00:00 UTC",
         )
@@ -433,8 +451,9 @@ class ReportTests(unittest.TestCase):
 
         self.assertIn("Breach Exposure & Ownership Verification", text)
         self.assertIn("Breach exposure is not proof of wallet ownership", text)
+        self.assertIn("XposedOrNot", text)
         self.assertIn("Adobe", text)
-        self.assertIn("2013-10-04", text)
+        self.assertIn("2013", text)
 
 
 if __name__ == "__main__":
