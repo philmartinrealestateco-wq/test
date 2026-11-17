@@ -30,6 +30,7 @@ COINGECKO_PAYLOAD = {
     "ethereum": {"usd": 2078.26, "last_updated_at": 1794432057},
     "binancecoin": {"usd": 686.12, "last_updated_at": 1794432057},
     "solana": {"usd": 84.83, "last_updated_at": 1794432078},
+    "ripple": {"usd": 2.20, "last_updated_at": 1794432057},
 }
 
 
@@ -94,7 +95,7 @@ def test_stale_cache_is_reused_when_every_source_fails(tmp_path: Path) -> None:
     cache = tmp_path / "prices.json"
     old = datetime.now(timezone.utc) - timedelta(hours=4)
     cache.write_text(
-        '{"fetched_at": "%s", "source": "old feed", "prices": {"BTC": "1", "ETH": "2", "BNB": "3", "SOL": "4"}}'
+        '{"fetched_at": "%s", "source": "old feed", "prices": {"BTC": "1", "ETH": "2", "BNB": "3", "SOL": "4", "XRP": "5"}}'
         % old.isoformat(),
         encoding="utf-8",
     )
@@ -105,11 +106,18 @@ def test_stale_cache_is_reused_when_every_source_fails(tmp_path: Path) -> None:
     snapshot = PriceService(FakeClient(handler), cache_path=cache).get()
     assert snapshot.stale is True
     assert snapshot.prices["SOL"] == Decimal("4")
+    assert snapshot.prices["XRP"] == Decimal("5")
 
 
 def test_non_positive_price_is_rejected() -> None:
     def handler(url, params):
-        return {"bitcoin": {"usd": 0}, "ethereum": {"usd": 1}, "binancecoin": {"usd": 1}, "solana": {"usd": 1}}
+        return {
+            "bitcoin": {"usd": 0},
+            "ethereum": {"usd": 1},
+            "binancecoin": {"usd": 1},
+            "solana": {"usd": 1},
+            "ripple": {"usd": 1},
+        }
 
     with pytest.raises(PriceError):
         PriceService(FakeClient(handler)).get()
@@ -140,6 +148,21 @@ def test_token_prices_are_keyed_by_lowercased_contract() -> None:
     assert snapshot.prices[CAKE] == Decimal("2.5")
     assert snapshot.missing == set()
     assert snapshot.source.startswith("CoinGecko")
+
+
+def test_ethereum_token_prices_use_the_ethereum_platform() -> None:
+    seen: list[str] = []
+
+    def handler(url, params):
+        seen.append(url)
+        return {USDT: {"usd": "1.0"}}
+
+    snapshot = PriceService(FakeClient(handler)).get_token_prices(
+        [USDT], platform="ethereum"
+    )
+
+    assert snapshot.prices[USDT] == Decimal("1.0")
+    assert seen and seen[0].endswith("/token_price/ethereum")
 
 
 def test_token_price_response_omits_unknown_contracts() -> None:

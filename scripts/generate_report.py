@@ -19,6 +19,7 @@ EXPLORERS = {
     "Ethereum": ("Etherscan", "https://etherscan.io/address/{address}"),
     "BNB Smart Chain": ("BscScan", "https://bscscan.com/address/{address}"),
     "Solana": ("Solscan", "https://solscan.io/account/{address}"),
+    "XRP": ("XRPScan", "https://xrpscan.com/account/{address}"),
 }
 
 CSS = """
@@ -188,6 +189,7 @@ def render(
     bsc_legs = sum(1 for entry in entries if "BNB Smart Chain" in entry["networks"])  # type: ignore[operator]
     btc_legs = sum(1 for entry in entries if "Bitcoin" in entry["networks"])  # type: ignore[operator]
     sol_legs = sum(1 for entry in entries if "Solana" in entry["networks"])  # type: ignore[operator]
+    xrp_legs = sum(1 for entry in entries if "XRP" in entry["networks"])  # type: ignore[operator]
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     rows: list[str] = []
@@ -240,6 +242,7 @@ def render(
     <div class="stat"><div class="value">{bsc_legs}</div><div class="label">BSC legs</div></div>
     <div class="stat"><div class="value">{btc_legs}</div><div class="label">Bitcoin legs</div></div>
     <div class="stat"><div class="value">{sol_legs}</div><div class="label">Solana legs</div></div>
+    <div class="stat"><div class="value">{xrp_legs}</div><div class="label">XRP legs</div></div>
   </section>
 
   <section class="table-wrap">
@@ -262,11 +265,11 @@ def render(
 
   <footer>
     Sorted by Best Total USD, highest first. Addresses link to Etherscan, BscScan,
-    Blockchain.com or Solscan according to the networks that matched.<br>
-    Best Total USD is native coin plus BEP-20 allowlist value — not the stablecoin
+    Blockchain.com, Solscan or XRPScan according to the networks that matched.<br>
+    Best Total USD is native coin plus priced token holdings — not the stablecoin
     balance of the token whose holder list surfaced the wallet.<br>
-    Bitcoin and Solana wallets come from the curated seed list in
-    <code>data/btc_sol_holders.csv</code>, not a live rich list.<br>
+    Bitcoin, Solana and XRP wallets come from live or curated holder lists, not a
+    full-chain scan.<br>
     Source: <code>{html.escape(str(source))}</code>
   </footer>
 </main>

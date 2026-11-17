@@ -13,6 +13,7 @@ from .base import Provider
 from .bitcoin import BitcoinProvider
 from .evm import BlockscoutProvider, BscProvider, EtherscanV2Provider
 from .solana import SolanaProvider
+from .xrp import XrpProvider
 
 ETHERSCAN_CHAIN_IDS = {Network.ETHEREUM: 1, Network.BSC: 56}
 
@@ -21,6 +22,7 @@ def build_providers(settings: Settings, client: HttpClient) -> dict[Network, Pro
     providers: dict[Network, Provider] = {
         Network.BITCOIN: BitcoinProvider(client, settings.blockchain_api_key),
         Network.SOLANA: SolanaProvider(client, settings.solana_rpc_url),
+        Network.XRP: XrpProvider(client),
     }
 
     if settings.has_etherscan_key:
@@ -81,6 +83,8 @@ def describe_modes(providers: dict[Network, Provider]) -> dict[Network, str]:
             descriptions[network] = provider.source_label
         elif isinstance(provider, SolanaProvider):
             descriptions[network] = f"Solana JSON-RPC ({provider._endpoint})"
+        elif isinstance(provider, XrpProvider):
+            descriptions[network] = "XRPScan (keyless)"
         else:  # pragma: no cover - defensive
             descriptions[network] = type(provider).__name__
     return descriptions

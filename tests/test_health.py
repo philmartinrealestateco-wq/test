@@ -90,6 +90,7 @@ def snapshot() -> PriceSnapshot:
             "ETH": Decimal("2078.26"),
             "BNB": Decimal("686.12"),
             "SOL": Decimal("84.83"),
+            "XRP": Decimal("2.20"),
         },
         source="CoinGecko simple/price",
         fetched_at=NOW,
@@ -104,6 +105,7 @@ def all_good(bsc_activity: bool = True, bsc_notes=None) -> dict:
             Network.BSC, result("2", activity=bsc_activity, notes=bsc_notes)
         ),
         Network.SOLANA: StubProvider(Network.SOLANA, result("100")),
+        Network.XRP: StubProvider(Network.XRP, result("1000")),
     }
 
 
@@ -118,9 +120,9 @@ def find(checks, needle: str):
 def test_everything_ok() -> None:
     checks = run(make_settings(), all_good())
 
-    assert [check.status for check in checks] == [OK] * 6
+    assert [check.status for check in checks] == [OK] * 7
     assert exit_code(checks) == 0
-    assert "6 OK" in format_summary(checks)
+    assert "7 OK" in format_summary(checks)
 
 
 def test_bsc_activity_without_a_key_needs_configuration_not_failure() -> None:
@@ -189,5 +191,5 @@ def test_price_feed_failure_is_reported() -> None:
 def test_table_lists_every_network() -> None:
     table = format_table(run(make_settings(), all_good()))
 
-    for expected in ("Bitcoin", "Ethereum", "BNB Smart Chain balance", "Solana", "Prices"):
+    for expected in ("Bitcoin", "Ethereum", "BNB Smart Chain balance", "Solana", "XRP", "Prices"):
         assert expected in table

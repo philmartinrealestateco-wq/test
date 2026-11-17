@@ -45,7 +45,13 @@ class FakePriceService:
     def get(self, *, force_refresh: bool = False) -> PriceSnapshot:
         return self.snapshot
 
-    def get_token_prices(self, contracts, *, force_refresh: bool = False) -> TokenPriceSnapshot:
+    def get_token_prices(
+        self,
+        contracts,
+        *,
+        platform: str = "binance-smart-chain",
+        force_refresh: bool = False,
+    ) -> TokenPriceSnapshot:
         wanted = [contract.lower() for contract in contracts]
         missing = {contract for contract in wanted if contract not in self.token_prices}
         return TokenPriceSnapshot(dict(self.token_prices), "test token feed", NOW, missing)
@@ -358,7 +364,7 @@ def test_token_lookup_failure_degrades_to_partial() -> None:
 
     assert record.tokens_checked is True
     assert record.verification_status is VerificationStatus.PARTIAL
-    assert "BEP-20 lookup failed" in record.joined_notes()
+    assert "token lookup failed" in record.joined_notes()
 
 
 def test_ethereum_records_ignore_the_token_layer() -> None:
@@ -377,6 +383,22 @@ def test_ethereum_records_ignore_the_token_layer() -> None:
     assert record.verification_status is VerificationStatus.VERIFIED
 
 
+def test_ethereum_erc20_holdings_are_valued() -> None:
+    provider = FakeProvider(Network.ETHEREUM, result=verified_result("1", days_ago=1))
+    analyzer = WalletAnalyzer(
+        {Network.ETHEREUM: provider},
+        FakePriceService({TOKEN_USDT: Decimal("1")}),
+        SETTINGS,
+        erc20=FakeBep20([usdt_holding("500")]),
+    )
+    result = analyzer.analyze([AddressEntry(Network.ETHEREUM, ETH_ADDRESS)], now=NOW)
+    record = result.records[0]
+
+    assert record.tokens_checked is True
+    assert record.tokens_usd == Decimal("500")
+    assert record.total_usd == record.usd_value + Decimal("500")
+
+
 def test_solana_rpc_failure_is_unverified_not_zero() -> None:
     provider = FakeProvider(
         Network.SOLANA,
@@ -393,7 +415,13 @@ def test_solana_rpc_failure_is_unverified_not_zero() -> None:
 
 def test_pricing_engine_failure_does_not_abort_the_run() -> None:
     class ExplodingPrices(FakePriceService):
-        def get_token_prices(self, contracts, *, force_refresh=False):
+        def get_token_prices(
+            self,
+            contracts,
+            *,
+            platform: str = "binance-smart-chain",
+            force_refresh=False,
+        ):
             raise RuntimeError("pricing engine exploded")
 
     provider = FakeProvider(Network.BSC, result=verified_result("100", days_ago=1))

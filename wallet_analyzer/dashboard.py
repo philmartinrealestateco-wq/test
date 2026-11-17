@@ -94,7 +94,7 @@ def _render_kpis(result: AnalysisResult) -> str:
         ("In balance range", f"{result.in_range_count:,}", "valued inside the thresholds"),
         ("Matching wallets", f"{len(result.matches):,}", "verified, active, in range"),
         ("Matched value", f"${result.matched_total_usd:,.0f}", "total USD across matches"),
-        ("BEP-20 value", f"${result.token_value_usd:,.0f}", "priced token holdings (BSC allowlist)"),
+        ("Token value", f"${result.token_value_usd:,.0f}", "priced ERC-20/BEP-20 holdings"),
     ]
     return "".join(
         f'<div class="kpi"><span class="kpi-label">{escape(label)}</span>'

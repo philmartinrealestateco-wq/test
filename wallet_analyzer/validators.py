@@ -11,12 +11,13 @@ import hashlib
 import re
 from dataclasses import dataclass
 
-from .crypto import base58_decode, bech32_decode_segwit, to_checksum_address
+from .crypto import base58_decode, base58_decode_xrp, bech32_decode_segwit, to_checksum_address
 from .models import Network
 
 _EVM_HEX = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _LEGACY_BTC = re.compile(r"^[13][1-9A-HJ-NP-Za-km-z]{25,34}$")
 _BASE58 = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
+_XRP_ADDRESS = re.compile(r"^r[1-9A-HJ-NP-Za-km-z]{24,34}$")
 
 
 @dataclass(frozen=True)
@@ -94,6 +95,34 @@ def validate_solana(address: str) -> ValidationResult:
     return ValidationResult(True, candidate)
 
 
+def validate_xrp(address: str) -> ValidationResult:
+    """Classic ``r...`` XRP account addresses only; X-addresses encode a tag."""
+
+    candidate = address.strip()
+    if candidate.startswith("X"):
+        return ValidationResult(
+            False,
+            address,
+            "X-addresses are not supported; use the classic r... account address",
+        )
+    if not _XRP_ADDRESS.match(candidate):
+        return ValidationResult(False, address, "not a classic XRP r... address")
+
+    try:
+        decoded = base58_decode_xrp(candidate)
+    except ValueError as exc:
+        return ValidationResult(False, address, str(exc))
+
+    if len(decoded) != 25:
+        return ValidationResult(False, address, "decoded payload is not 25 bytes")
+    if decoded[0] != 0x00:
+        return ValidationResult(False, address, "not a mainnet XRP account version byte")
+    if not _bitcoin_checksum_ok(decoded):
+        return ValidationResult(False, address, "base58check checksum mismatch")
+
+    return ValidationResult(True, candidate)
+
+
 def validate(network: Network, address: str) -> ValidationResult:
     if not address or not address.strip():
         return ValidationResult(False, address, "empty address")
@@ -103,6 +132,8 @@ def validate(network: Network, address: str) -> ValidationResult:
         return validate_evm(address)
     if network is Network.SOLANA:
         return validate_solana(address)
+    if network is Network.XRP:
+        return validate_xrp(address)
     return ValidationResult(False, address, f"unsupported network {network}")
 
 
@@ -120,6 +151,8 @@ def detect_networks(address: str) -> list[Network]:
         return [Network.BITCOIN] if validate_bitcoin(candidate).valid else []
     if _LEGACY_BTC.match(candidate) and validate_bitcoin(candidate).valid:
         return [Network.BITCOIN]
+    if validate_xrp(candidate).valid:
+        return [Network.XRP]
     if validate_solana(candidate).valid:
         return [Network.SOLANA]
     return []

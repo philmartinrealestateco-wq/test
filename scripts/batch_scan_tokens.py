@@ -3,7 +3,7 @@
 For each ``SYMBOL:ADDRESS:CHAIN`` spec:
 
 1. paginate Blockscout's keyless holders API into ``out/batch/SYMBOL_holders.csv``
-2. run ``scan_target.bat`` with ``--quiet``
+2. run the analyzer over that holder file with the requested USD bounds
 3. snapshot the rows that run appended to ``out/report_matches.csv`` into
    ``out/batch/SYMBOL_matches.csv``
 
@@ -32,7 +32,6 @@ if str(ROOT) not in sys.path:
 from wallet_analyzer.tokens import DEFAULT_BEP20_TOKENS  # noqa: E402
 
 FETCH_SCRIPT = Path(__file__).resolve().parent / "fetch_blockscout_holders.py"
-SCAN_WRAPPER = ROOT / "scan_target.bat"
 OUT_DIR = ROOT / "out"
 BATCH_DIR = OUT_DIR / "batch"
 REPORT_MATCHES = OUT_DIR / "report_matches.csv"
@@ -114,7 +113,13 @@ def fetch_holders(spec: TokenSpec, limit: int, out_path: Path) -> None:
         )
 
 
-def run_scan(spec: TokenSpec, limit: int, holders_csv: Path, log_path: Path) -> None:
+def run_scan(
+    spec: TokenSpec,
+    holders_csv: Path,
+    log_path: Path,
+    minimum: Decimal,
+    maximum: Decimal,
+) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("w", encoding="utf-8") as log:
         completed = subprocess.run(
@@ -122,12 +127,16 @@ def run_scan(spec: TokenSpec, limit: int, holders_csv: Path, log_path: Path) -> 
                 "cmd",
                 "/c",
                 "call",
-                str(SCAN_WRAPPER),
-                spec.address,
-                spec.chain,
-                str(limit),
+                str(ROOT / "run.cmd"),
+                "analyze",
+                "--file",
                 str(holders_csv),
+                "--filter",
                 "--quiet",
+                "--min-usd",
+                str(minimum),
+                "--max-usd",
+                str(maximum),
             ],
             cwd=ROOT,
             stdout=log,
@@ -334,7 +343,13 @@ def main() -> int:
                 else:
                     fetch_holders(spec, args.limit, holders_csv)
                 before = len(read_rows(REPORT_MATCHES))
-                run_scan(spec, args.limit, holders_csv, log_path)
+                run_scan(
+                    spec,
+                    holders_csv,
+                    log_path,
+                    args.min_usd,
+                    args.max_usd,
+                )
                 count, match_path = snapshot_matches(spec.symbol, before)
             except (RuntimeError, OSError) as exc:
                 print(f"error: {exc}", file=sys.stderr)

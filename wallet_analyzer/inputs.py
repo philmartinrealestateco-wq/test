@@ -14,7 +14,16 @@ from pathlib import Path
 from .models import AddressEntry, Network
 from .validators import detect_networks
 
-_ADDRESS_KEYS = ("address", "wallet", "wallet_address", "addr", "account")
+_ADDRESS_KEYS = (
+    "address",
+    "wallet",
+    "wallet_address",
+    "addr",
+    "account",
+    "holder",
+    "holderaddress",
+    "tokenholderaddress",
+)
 _NETWORK_KEYS = ("network", "chain", "blockchain", "net")
 _LABEL_KEYS = ("label", "name", "note", "description")
 
@@ -100,13 +109,13 @@ def _read_table(path: Path, *, delimiter: str) -> tuple[list[RawAddress], list[s
         label_column = _first_present(lookup, _LABEL_KEYS)
 
         for line_number, row in enumerate(reader, start=2):
-            address = (row.get(lookup[address_column]) or "").strip()
+            address = (row.get(address_column) or "").strip()
             if not address or address.startswith("#"):
                 continue
 
             network: Network | None = None
             if network_column:
-                raw_network = (row.get(lookup[network_column]) or "").strip()
+                raw_network = (row.get(network_column) or "").strip()
                 if raw_network:
                     try:
                         network = Network.parse(raw_network)
@@ -114,7 +123,7 @@ def _read_table(path: Path, *, delimiter: str) -> tuple[list[RawAddress], list[s
                         warnings.append(f"{path.name} line {line_number}: {exc}")
                         continue
 
-            label = (row.get(lookup[label_column]) or "").strip() if label_column else ""
+            label = (row.get(label_column) or "").strip() if label_column else ""
             rows.append(RawAddress(address=address, network=network, label=label))
 
     return rows, warnings

@@ -14,7 +14,11 @@ from .net import HttpClient, ProviderError
 LOG = logging.getLogger(__name__)
 
 COINGECKO_URL = "https://api.coingecko.com/api/v3/simple/price"
-TOKEN_PRICE_URL = "https://api.coingecko.com/api/v3/simple/token_price/binance-smart-chain"
+TOKEN_PRICE_URLS = {
+    "binance-smart-chain": "https://api.coingecko.com/api/v3/simple/token_price/binance-smart-chain",
+    "ethereum": "https://api.coingecko.com/api/v3/simple/token_price/ethereum",
+}
+TOKEN_PRICE_URL = TOKEN_PRICE_URLS["binance-smart-chain"]
 COINBASE_URL = "https://api.coinbase.com/v2/prices/{pair}/spot"
 
 #: The public CoinGecko tier rejects more than one contract address per call
@@ -32,6 +36,7 @@ COINGECKO_IDS = {
     "ETH": "ethereum",
     "BNB": "binancecoin",
     "SOL": "solana",
+    "XRP": "ripple",
 }
 ASSETS = tuple(COINGECKO_IDS)
 
@@ -186,14 +191,18 @@ class PriceService:
     # -- token prices ----------------------------------------------------
 
     def get_token_prices(
-        self, contracts: list[str], *, force_refresh: bool = False
+        self,
+        contracts: list[str],
+        *,
+        platform: str = "binance-smart-chain",
+        force_refresh: bool = False,
     ) -> TokenPriceSnapshot:
-        """Price BEP-20 contracts one call per contract, with a TTL cache.
+        """Price EVM token contracts one call per contract, with a TTL cache.
 
-        Never raises and never returns a stale price: an unpriced contract lands
-        in ``missing`` so the caller can mark the wallet's valuation incomplete
-        instead of guessing. A single unreachable contract cannot discard prices
-        that were already obtained for the others.
+        ``platform`` selects CoinGecko's asset platform (``ethereum`` or
+        ``binance-smart-chain``). Never raises for a provider failure: an
+        unpriced contract lands in ``missing`` so the caller can mark the
+        wallet's valuation incomplete instead of guessing.
         """
 
         wanted = [contract.lower() for contract in contracts]
@@ -225,14 +234,14 @@ class PriceService:
         source = "cache" if prices else ""
         missing = [contract for contract in wanted if contract not in prices]
         if missing:
-            fetched, failed = self._fetch_token_prices(missing)
+            fetched, failed = self._fetch_token_prices(missing, platform)
             if fetched:
                 prices.update(fetched)
                 self._write_token_cache(fetched)
-                source = "CoinGecko token_price"
+                source = f"CoinGecko token_price ({platform})"
             if failed:
                 LOG.warning(
-                    "BEP-20 price unavailable for %s of %s contract(s) after retries",
+                    "token price unavailable for %s of %s contract(s) after retries",
                     len(failed),
                     len(missing),
                 )
@@ -242,8 +251,14 @@ class PriceService:
             return TokenPriceSnapshot({}, "unavailable", None, unresolved)
         return TokenPriceSnapshot(prices, source or "cache", now, unresolved)
 
-    def _fetch_token_prices(self, contracts: list[str]) -> tuple[dict[str, Decimal], set[str]]:
+    def _fetch_token_prices(
+        self, contracts: list[str], platform: str
+    ) -> tuple[dict[str, Decimal], set[str]]:
         """Fetch independently so one failing contract does not sink the rest."""
+
+        url = TOKEN_PRICE_URLS.get(platform)
+        if url is None:
+            raise ValueError(f"unknown token price platform {platform!r}")
 
         prices: dict[str, Decimal] = {}
         failed: set[str] = set()
@@ -252,7 +267,7 @@ class PriceService:
             chunk = contracts[start : start + TOKEN_PRICE_BATCH]
             try:
                 payload = self._client.get_json(
-                    TOKEN_PRICE_URL,
+                    url,
                     {"contract_addresses": ",".join(chunk), "vs_currencies": "usd"},
                     host="api.coingecko.com",
                     retry_statuses=TOKEN_PRICE_RETRY_STATUSES,

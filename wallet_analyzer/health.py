@@ -28,6 +28,7 @@ KNOWN_ADDRESSES: dict[Network, str] = {
     Network.ETHEREUM: "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
     Network.BSC: "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
     Network.SOLANA: "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+    Network.XRP: "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
 }
 
 
@@ -57,6 +58,7 @@ def run_checks(
     ]
     checks.extend(_check_bsc(resolved, settings))
     checks.append(_check_solana(resolved))
+    checks.append(_check_xrp(resolved))
     checks.append(_check_prices(settings, client, price_service))
     return checks
 
@@ -196,6 +198,22 @@ def _check_solana(providers: dict[Network, Provider]) -> ServiceCheck:
             label, FAILED, str(exc), "check SOLANA_RPC_URL; the public endpoint throttles"
         )
     return ServiceCheck(label, OK, f"{mode}; balance {format_amount(result.balance)} SOL")
+
+
+def _check_xrp(providers: dict[Network, Provider]) -> ServiceCheck:
+    label = "XRP (XRPScan)"
+    provider = providers[Network.XRP]
+    mode = describe_modes({Network.XRP: provider})[Network.XRP]
+    try:
+        result = provider.fetch(KNOWN_ADDRESSES[Network.XRP])
+    except ProviderError as exc:
+        return ServiceCheck(
+            label,
+            FAILED,
+            str(exc),
+            "check connectivity to api.xrpscan.com; the endpoint needs no key",
+        )
+    return ServiceCheck(label, OK, f"{mode}; balance {format_amount(result.balance)} XRP")
 
 
 def _check_prices(

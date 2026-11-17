@@ -1,12 +1,9 @@
-"""BEP-20 balances over public BNB Chain JSON-RPC.
+"""EVM token balances over public JSON-RPC (BEP-20 and ERC-20).
 
 Only two ERC-20-compatible calls are used: ``balanceOf(address)`` on the token
 contract, plus ``decimals()`` and ``symbol()`` once per contract. All three are
-plain ``eth_call`` reads, so nothing is signed or broadcast.
-
-What this cannot do: discover which tokens a wallet holds. That needs a log
-indexer, and the public dataseed rejects ``eth_getLogs`` outright. The caller
-supplies the token allowlist; anything outside it is invisible here.
+plain ``eth_call`` reads, so nothing is signed or broadcast. The caller supplies
+the chain's RPC URL and token allowlist.
 """
 
 from __future__ import annotations
@@ -110,12 +107,13 @@ class Bep20Provider:
         tokens: list[TokenSpec],
         *,
         batch_size: int = 40,
+        env_hint: str = "BSC_RPC_URL",
     ) -> None:
         self._rpc = JsonRpcProvider(
             client,
             rpc_url,
             host=urlparse(rpc_url).hostname or "invalid-endpoint",
-            env_hint="BSC_RPC_URL",
+            env_hint=env_hint,
         )
         self._tokens = list(tokens)
         self._batch_size = max(1, batch_size)

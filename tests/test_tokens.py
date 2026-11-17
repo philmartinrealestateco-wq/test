@@ -8,6 +8,7 @@ import pytest
 
 from wallet_analyzer.tokens import (
     DEFAULT_BEP20_TOKENS,
+    DEFAULT_ERC20_TOKENS,
     TokenListError,
     TokenSpec,
     load_token_list,
@@ -20,6 +21,7 @@ BUSD = "0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56"
 USDC = "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d"
 FDUSD = "0xc5f0f7b66764F6ec8C8Dff7BA683102295E16409"
 DAI = "0x1AF3F329e8BE154074D8769D1FFa4eE058B1DBc3"
+WBNB = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"
 
 
 def test_default_registry_is_unique_and_evm_shaped() -> None:
@@ -36,10 +38,25 @@ def test_default_registry_pins_stablecoins() -> None:
         assert by_contract[contract.lower()].symbol == symbol
         assert by_contract[contract.lower()].contract == contract
 
+    assert by_contract[USDT.lower()].symbol == "USDT"
+    assert by_contract[WBNB.lower()].symbol == "WBNB"
+
     # 13 unique contracts: these four plus USDT, WBNB, CAKE, BTCB, ETH, LINK,
     # DOT, ADA and XRP.
     assert len(DEFAULT_BEP20_TOKENS) == 13
     assert len(by_contract) == 13
+
+
+def test_default_erc20_registry_pins_the_ethereum_stablecoins() -> None:
+    by_symbol = {token.symbol: token for token in DEFAULT_ERC20_TOKENS}
+
+    assert set(by_symbol) == {"USDT", "USDC", "DAI"}
+    assert by_symbol["USDT"].contract == "0xdAC17F958D2ee523a2206206994597C13D831ec7"
+    assert by_symbol["USDC"].contract == "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+    assert by_symbol["DAI"].contract == "0x6B175474E89094C44Da98b954EedeAC495271d0F"
+    assert by_symbol["USDT"].decimals == 6
+    assert by_symbol["USDC"].decimals == 6
+    assert by_symbol["DAI"].decimals == 18
 
 
 def test_re_adding_existing_contracts_does_not_duplicate_the_registry() -> None:

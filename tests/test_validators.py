@@ -12,6 +12,7 @@ BURN = "1FeexV6bAHb8ybZjqQMjJrcCrHGW9sb6uF"
 P2SH = "3C8mzzeiyakvXkQadUM5f98zCt5NQWwXo1"
 BECH32 = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
 SOLANA = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"
+XRP = "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"
 
 
 @pytest.mark.parametrize("address", [BURN, P2SH, BECH32, BECH32.upper()])
@@ -65,6 +66,26 @@ def test_solana_accepts_public_key() -> None:
 )
 def test_solana_rejects_wrong_shapes(address: str) -> None:
     assert not validate(Network.SOLANA, address).valid
+
+
+def test_xrp_accepts_a_classic_account() -> None:
+    assert validate(Network.XRP, XRP).valid
+
+
+def test_xrp_rejects_a_bad_checksum() -> None:
+    outcome = validate(Network.XRP, XRP[:-1] + "U")
+    assert not outcome.valid
+    assert "checksum" in outcome.reason
+
+
+def test_xrp_rejects_an_x_address() -> None:
+    outcome = validate(Network.XRP, "X" + "1" * 46)
+    assert not outcome.valid
+    assert "X-address" in outcome.reason
+
+
+def test_detect_xrp() -> None:
+    assert detect_networks(XRP) == [Network.XRP]
 
 
 def test_empty_address_is_invalid() -> None:

@@ -16,7 +16,7 @@ def test_dashboard_reports_the_headline_numbers(sample_result) -> None:
     assert "Matching wallets" in html
     assert "89,529.60" in html  # the single match value
     assert "CoinGecko simple/price" in html
-    assert "BEP-20 value" in html
+    assert "Token value" in html
     assert "Token USD" in html
     assert "unlisted tokens" in html
 

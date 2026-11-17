@@ -29,6 +29,9 @@ _ROTATIONS = (
 
 B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 _B58_INDEX = {char: index for index, char in enumerate(B58_ALPHABET)}
+# Ripple uses a different base58 alphabet; its 'r' is index 0, not Bitcoin's '1'.
+XRP_B58_ALPHABET = "rpshnaf39wBUDNEGHJKLM4PQRST7VWXYZ2bcdeCg65jkm8oFqi1tuvAxyz"
+_XRP_B58_INDEX = {char: index for index, char in enumerate(XRP_B58_ALPHABET)}
 
 _BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
 _BECH32_INDEX = {char: index for index, char in enumerate(_BECH32_CHARSET)}
@@ -107,6 +110,20 @@ def base58_decode(value: str) -> bytes:
             raise ValueError(f"invalid base58 character {char!r}") from exc
     body = number.to_bytes((number.bit_length() + 7) // 8, "big") if number else b""
     leading_zeros = len(value) - len(value.lstrip("1"))
+    return b"\x00" * leading_zeros + body
+
+
+def base58_decode_xrp(value: str) -> bytes:
+    """Decode a classic XRP address using the Ripple base58 alphabet."""
+
+    number = 0
+    for char in value:
+        try:
+            number = number * 58 + _XRP_B58_INDEX[char]
+        except KeyError as exc:
+            raise ValueError(f"invalid XRP base58 character {char!r}") from exc
+    body = number.to_bytes((number.bit_length() + 7) // 8, "big") if number else b""
+    leading_zeros = len(value) - len(value.lstrip("r"))
     return b"\x00" * leading_zeros + body
 
 

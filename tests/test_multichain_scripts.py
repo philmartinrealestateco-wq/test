@@ -177,6 +177,80 @@ def test_guess_network_separates_bitcoin_from_solana():
     assert module._guess_network("not-an-address", "") is None
 
 
+def test_xrp_rich_list_filters_custodial_and_respects_limit(monkeypatch):
+    module = _load("fetch_xrp_holders", "fetch_xrp_holders.py")
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return [
+                {
+                    "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+                    "balance": 20_000 * 1_000_000,
+                    "name": None,
+                },
+                {
+                    "account": "rDdXiA3M4mYTQ4cFpWkVXfc2UaAXCFWeCK",
+                    "balance": 30_000 * 1_000_000,
+                    "name": {"name": "Binance"},
+                },
+                {
+                    "account": "rKwJaGmB5Hz24Qs2iyCaTdUuL1WsEXUWy5",
+                    "balance": 40_000 * 1_000_000,
+                    "escrow": 5_000_000,
+                },
+                {
+                    "account": "rB3WNZc45gxzW31zxfXdkx8HusAhoqscPn",
+                    "balance": 2_000_000 * 1_000_000,
+                },
+                {"account": "not-an-address", "balance": 1},
+            ]
+
+    monkeypatch.setattr(module.requests, "get", lambda *args, **kwargs: Response())
+    monkeypatch.setattr(module, "_xrp_usd", lambda: Decimal("1"))
+
+    rows, invalid, custodial, out_of_range = module.fetch_balances(10)
+
+    assert [row[0] for row in rows] == ["rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"]
+    assert rows[0][2] == "20000.000000"
+    assert invalid == 1
+    assert custodial == 2
+    assert out_of_range == 1
+
+
+def test_xrp_input_csv_validates_and_limits(tmp_path):
+    module = _load("fetch_xrp_holders", "fetch_xrp_holders.py")
+    path = tmp_path / "xrp.csv"
+    path.write_text(
+        "address,network,balance,label\n"
+        "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh,xrp,56786.636999,genesis\n"
+        "not-an-address,xrp,1,bad\n",
+        encoding="utf-8",
+    )
+
+    rows, invalid = module.load_input(path, 10)
+
+    assert rows == [
+        (
+            "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+            "xrp",
+            "56786.636999",
+            "genesis",
+        )
+    ]
+    assert invalid == 1
+
+
+def test_pipeline_has_an_xrp_snapshot_and_stage():
+    pipeline = _load("run_pipeline", "run_pipeline.py")
+
+    assert pipeline.CHAIN_SNAPSHOTS["XRP"] == "XRP"
+    assert pipeline.XRP_CSV.name == "xrp_holders.csv"
+    assert pipeline.XRP_FETCHER.exists()
+
+
 def test_holders_csv_maps_each_row_to_its_network(tmp_path):
     path = tmp_path / "btc_sol_holders.csv"
     path.write_text(
@@ -220,6 +294,13 @@ def test_report_links_bitcoin_and_solana_plus_the_window():
             "total": Decimal("120000.00"),
             "status": "PARTIAL",
         },
+        {
+            "wallet": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+            "tokens": ["XRP"],
+            "networks": ["XRP"],
+            "total": Decimal("300000.00"),
+            "status": "VERIFIED",
+        },
     ]
 
     page = module.render(
@@ -228,5 +309,6 @@ def test_report_links_bitcoin_and_solana_plus_the_window():
 
     assert "blockchain.com/explorer/addresses/btc/1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa" in page
     assert "solscan.io/account/5FGoPPj1nL8LCnfVnpTmreqQtqLuMXXAwuS1uahMrp8V" in page
+    assert "xrpscan.com/account/rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh" in page
     assert "$50,000–$10,000,000" in page
-    assert "Bitcoin legs" in page and "Solana legs" in page
+    assert "Bitcoin legs" in page and "Solana legs" in page and "XRP legs" in page

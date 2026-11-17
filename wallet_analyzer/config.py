@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_SOLANA_RPC = "https://api.mainnet-beta.solana.com"
 DEFAULT_BSC_RPC = "https://bsc-dataseed.binance.org"
+DEFAULT_ETHEREUM_RPC = "https://ethereum.publicnode.com"
 
 
 class ConfigError(RuntimeError):
@@ -79,6 +80,7 @@ class Settings:
     output_dir: Path
     cache_dir: Path
     log_level: str
+    ethereum_rpc_url: str = DEFAULT_ETHEREUM_RPC
     bep20_enabled: bool = True
     token_list_file: Path | None = None
 
@@ -111,6 +113,9 @@ class Settings:
             blockchain_api_key=_secret("BLOCKCHAIN_EXPLORER_API_KEY"),
             solana_rpc_url=(os.getenv("SOLANA_RPC_URL") or DEFAULT_SOLANA_RPC).strip(),
             bsc_rpc_url=(os.getenv("BSC_RPC_URL") or DEFAULT_BSC_RPC).strip(),
+            ethereum_rpc_url=(
+                os.getenv("ETHEREUM_RPC_URL") or DEFAULT_ETHEREUM_RPC
+            ).strip(),
             min_usd=min_usd,
             max_usd=max_usd,
             activity_days=activity_days,
@@ -192,6 +197,7 @@ class Settings:
             ),
             "solana_rpc": _host_only(self.solana_rpc_url),
             "bsc_rpc": _host_only(self.bsc_rpc_url),
+            "ethereum_rpc": _host_only(self.ethereum_rpc_url),
             "min_usd": f"{self.min_usd}",
             "max_usd": f"{self.max_usd}",
             "activity_days": str(self.activity_days),

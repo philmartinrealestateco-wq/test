@@ -13,10 +13,12 @@ from wallet_analyzer.net import ProviderError
 from wallet_analyzer.providers.bitcoin import BitcoinProvider
 from wallet_analyzer.providers.evm import BscProvider, BlockscoutProvider, EtherscanV2Provider
 from wallet_analyzer.providers.solana import SolanaProvider
+from wallet_analyzer.providers.xrp import XrpProvider
 
 BTC = "bc1qgdjqv0av3q56jvd82tkdjpy7gdp9ut8tlqmgrpmv24sq90ecnvqqjwvw97"
 EVM = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
 SOL = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"
+XRP = "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"
 
 
 class FakeClient:
@@ -513,3 +515,111 @@ def test_bsc_rejects_a_malformed_rpc_url() -> None:
     client = FakeClient(post_handler=lambda payload: pytest.fail("no request should be made"))
     with pytest.raises(ProviderError, match="BSC_RPC_URL"):
         BscProvider(client, "not-a-url", fallback_urls=()).fetch(EVM)
+
+
+# -- XRP -----------------------------------------------------------------
+
+
+def test_xrp_reads_balance_and_newest_successful_transaction() -> None:
+    def handler(url, params):
+        if url.endswith("/transactions"):
+            return {
+                "transactions": [
+                    {
+                        "validated": True,
+                        "date": "2026-11-09T04:38:31.000Z",
+                        "meta": {"TransactionResult": "tesSUCCESS"},
+                    },
+                    {
+                        "validated": True,
+                        "date": "2026-11-01T00:00:00.000Z",
+                        "meta": {"TransactionResult": "tesSUCCESS"},
+                    },
+                ]
+            }
+        return {"Balance": "56786636999", "xrpBalance": "56786.636999"}
+
+    result = XrpProvider(FakeClient(get_handler=handler)).fetch(XRP)
+
+    assert result.balance == Decimal("56786.636999")
+    assert result.balance_verified
+    assert result.activity_verified
+    assert result.last_tx_at == datetime.fromisoformat("2026-11-09T04:38:31+00:00")
+    assert "XRPScan" in result.balance_source
+    assert "XRPScan" in result.activity_source
+
+
+def test_xrp_activity_failure_keeps_the_balance_partial() -> None:
+    def handler(url, params):
+        if url.endswith("/transactions"):
+            raise ProviderError("XRPScan transactions unavailable")
+        return {"Balance": "1000000"}
+
+    result = XrpProvider(FakeClient(get_handler=handler)).fetch(XRP)
+
+    assert result.balance == Decimal("1")
+    assert result.balance_verified
+    assert not result.activity_verified
+    assert "activity lookup failed" in " ".join(result.notes)
+
+
+def test_xrp_failed_transactions_without_a_marker_are_inactive() -> None:
+    def handler(url, params):
+        if url.endswith("/transactions"):
+            return {
+                "transactions": [
+                    {
+                        "validated": True,
+                        "date": "2026-11-09T04:38:31.000Z",
+                        "meta": {"TransactionResult": "tecUNFUNDED_PAYMENT"},
+                    }
+                ]
+            }
+        return {"Balance": "1000000"}
+
+    result = XrpProvider(FakeClient(get_handler=handler)).fetch(XRP)
+
+    assert result.last_tx_at is None
+    assert result.activity_verified
+    assert "no successful transaction" in " ".join(result.notes)
+
+
+def test_xrp_failed_transactions_with_a_marker_are_not_called_inactive() -> None:
+    def handler(url, params):
+        if url.endswith("/transactions"):
+            return {
+                "transactions": [
+                    {
+                        "validated": True,
+                        "date": "2026-11-09T04:38:31.000Z",
+                        "meta": {"TransactionResult": "tecUNFUNDED_PAYMENT"},
+                    }
+                ],
+                "marker": "more",
+            }
+        return {"Balance": "1000000"}
+
+    result = XrpProvider(FakeClient(get_handler=handler)).fetch(XRP)
+
+    assert result.last_tx_at is None
+    assert not result.activity_verified
+    assert "older activity was not checked" in " ".join(result.notes)
+
+
+def test_xrp_missing_balance_raises() -> None:
+    client = FakeClient(get_handler=lambda url, params: {"Account": XRP})
+    with pytest.raises(ProviderError, match="no usable XRP balance"):
+        XrpProvider(client).fetch(XRP)
+
+
+def test_xrp_unexpected_transaction_payload_is_not_inactivity() -> None:
+    def handler(url, params):
+        if url.endswith("/transactions"):
+            return {"transactions": {"not": "a list"}}
+        return {"Balance": "1000000"}
+
+    result = XrpProvider(FakeClient(get_handler=handler)).fetch(XRP)
+
+    assert result.balance_verified
+    assert not result.activity_verified
+    assert "unexpected transaction payload" in " ".join(result.notes)

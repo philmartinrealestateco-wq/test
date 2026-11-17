@@ -124,7 +124,7 @@ def _notes_with_tokens(record: WalletRecord) -> str:
         )
         if len(record.token_holdings) > 6:
             symbols += f", +{len(record.token_holdings) - 6} more"
-        notes.append(f"BEP-20 holdings: {symbols}")
+        notes.append(f"Token holdings: {symbols}")
     if record.tokens_checked and record.token_note:
         notes.append(record.token_note)
     return "; ".join(notes)
@@ -273,8 +273,8 @@ def _summary_rows(result: AnalysisResult) -> list[tuple[str, object]]:
         ("Wallets inside balance range", result.in_range_count),
         ("Matching wallets", len(result.matches)),
         ("Total USD of matches", float(result.matched_total_usd)),
-        ("Wallets holding BEP-20", result.wallets_with_tokens),
-        ("BEP-20 value (USD)", float(result.token_value_usd)),
+        ("Wallets holding tokens", result.wallets_with_tokens),
+        ("Token value (USD)", float(result.token_value_usd)),
         ("Price source", result.price_source),
         ("Prices as of (UTC)", format_timestamp(result.price_fetched_at)),
     ]

@@ -206,6 +206,18 @@ def test_scan_propagates_endpoint_configuration_errors() -> None:
         bep20.scan(WALLET)
 
 
+def test_ethereum_endpoint_hint_is_surfaced() -> None:
+    client = FakeClient()
+    bep20 = Bep20Provider(
+        client,
+        "bare-key-not-a-url",
+        [TokenSpec(TOKEN_A)],
+        env_hint="ETHEREUM_RPC_URL",
+    )
+    with pytest.raises(ProviderError, match="ETHEREUM_RPC_URL"):
+        bep20.scan(WALLET)
+
+
 def test_decimals_are_resolved_per_contract_not_assumed() -> None:
     """BUSD/USDC report 18 on-chain; another token reports 6. Scaling must follow."""
 

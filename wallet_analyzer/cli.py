@@ -39,6 +39,7 @@ from .providers import build_providers, describe_modes, log_provider_summaries
 from .report import format_usd, write_reports
 from .tokens import (
     DEFAULT_BEP20_TOKENS,
+    DEFAULT_ERC20_TOKENS,
     TokenListError,
     load_token_list,
     merge_tokens,
@@ -102,7 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument(
         "--no-tokens",
         action="store_true",
-        help="skip BEP-20 balances (native coin only)",
+        help="skip ERC-20/BEP-20 balances (native coin only)",
     )
     analyze.add_argument(
         "--token",
@@ -147,7 +148,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="output .txt path (default <out>/holders_<contract>.txt)",
     )
     discover.add_argument(
-        "--limit", type=int, default=100, help="how many holders to request (default 100)"
+        "--limit",
+        type=int,
+        default=100,
+        help="how many holders to request (default 100; up to 10000 with --csv)",
     )
     discover.set_defaults(handler=cmd_discover)
 
@@ -217,13 +221,14 @@ def cmd_analyze(args: argparse.Namespace) -> int:
             cache_path=settings.cache_dir / "prices.json",
             token_cache_path=settings.cache_dir / "token_prices.json",
         )
-        bep20 = _build_bep20(settings, args, client)
+        bep20, erc20 = _build_token_providers(settings, args, client)
         analyzer = WalletAnalyzer(
             providers,
             price_service,
             analysis_settings,
             max_workers=settings.max_workers,
             bep20=bep20,
+            erc20=erc20,
         )
 
         try:
@@ -263,7 +268,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
                 return 0
 
             if not args.quiet:
-                _print_plan(entries, modes, analysis_settings, bep20)
+                _print_plan(entries, modes, analysis_settings, bep20, erc20)
 
             result = analyzer.analyze(
                 entries,
@@ -317,6 +322,7 @@ def cmd_providers(_args: argparse.Namespace) -> int:
     )
     for network in Network:
         print(f"  {network.label:<16} {modes.get(network, 'unavailable')}")
+    print(f"\nendpoints: ethereum {summary['ethereum_rpc']} | solana {summary['solana_rpc']} | bsc {summary['bsc_rpc']}")
     if not settings.has_bsc_activity_key:
         print(
             "\nBNB Chain activity cannot be verified without an Etherscan V2 key that "
@@ -364,7 +370,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 c=summary["blockchain_key"],
             )
         )
-        print(f"endpoints: solana {summary['solana_rpc']} | bsc {summary['bsc_rpc']}")
+        print(f"endpoints: ethereum {summary['ethereum_rpc']} | solana {summary['solana_rpc']} | bsc {summary['bsc_rpc']}")
         print("all checks are read-only: nothing is signed or broadcast")
 
     return exit_code(checks)
@@ -387,8 +393,13 @@ def cmd_discover(args: argparse.Namespace) -> int:
         )
         return 2
 
-    if not 1 <= args.limit <= 1000:
-        print("error: --limit must be between 1 and 1000", file=sys.stderr)
+    max_limit = 10_000 if args.csv else 1_000
+    if not 1 <= args.limit <= max_limit:
+        suffix = " with --csv" if args.csv else ""
+        print(
+            f"error: --limit must be between 1 and {max_limit}{suffix}",
+            file=sys.stderr,
+        )
         return 2
 
     settings = Settings.load()
@@ -470,9 +481,13 @@ def _collect_entries(args: argparse.Namespace) -> list[AddressEntry]:
     return entries
 
 
-def _build_bep20(settings: Settings, args: argparse.Namespace, client: HttpClient) -> Bep20Provider | None:
+def _build_token_providers(
+    settings: Settings,
+    args: argparse.Namespace,
+    client: HttpClient,
+) -> tuple[Bep20Provider | None, Bep20Provider | None]:
     if args.no_tokens or not settings.bep20_enabled:
-        return None
+        return None, None
 
     token_file = args.token_file or settings.token_list_file
     groups: list[tuple] = [DEFAULT_BEP20_TOKENS]
@@ -481,7 +496,14 @@ def _build_bep20(settings: Settings, args: argparse.Namespace, client: HttpClien
     if args.token:
         groups.append(tuple(parse_token_argument(value) for value in args.token))
 
-    return Bep20Provider(client, settings.bsc_rpc_url, merge_tokens(*groups))
+    bep20 = Bep20Provider(client, settings.bsc_rpc_url, merge_tokens(*groups))
+    erc20 = Bep20Provider(
+        client,
+        settings.ethereum_rpc_url,
+        list(DEFAULT_ERC20_TOKENS),
+        env_hint="ETHEREUM_RPC_URL",
+    )
+    return bep20, erc20
 
 
 def _print_plan(
@@ -489,6 +511,7 @@ def _print_plan(
     modes: dict[Network, str],
     settings: AnalysisSettings,
     bep20: Bep20Provider | None = None,
+    erc20: Bep20Provider | None = None,
 ) -> None:
     counts: dict[Network, int] = {}
     for entry in entries:
@@ -498,6 +521,11 @@ def _print_plan(
     print(f"criteria: {settings.describe()}")
     for network, count in counts.items():
         print(f"  {network.label:<16} {count:>4}  via {modes.get(network, 'unavailable')}")
+    if erc20 is not None and counts.get(Network.ETHEREUM):
+        print(
+            f"  ERC-20 allowlist: {len(erc20.contracts)} contract(s) via {erc20.endpoint} "
+            "(unlisted tokens are not detected)"
+        )
     if bep20 is not None and counts.get(Network.BSC):
         print(
             f"  BEP-20 allowlist: {len(bep20.contracts)} contract(s) via {bep20.endpoint} "
@@ -547,8 +575,8 @@ def _print_summary(result, paths, dashboard_path: Path | None) -> None:
     print(f"  matching wallets   : {len(result.matches)}")
     print(f"  matched value      : ${result.matched_total_usd:,.2f}")
     if any(record.tokens_checked for record in result.records):
-        print(f"  BEP-20 holders     : {result.wallets_with_tokens}")
-        print(f"  BEP-20 value       : ${result.token_value_usd:,.2f}")
+        print(f"  token holders      : {result.wallets_with_tokens}")
+        print(f"  token value        : ${result.token_value_usd:,.2f}")
     print(f"  prices             : {result.price_source}")
     print()
     print("reports")

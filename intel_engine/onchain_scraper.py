@@ -31,9 +31,11 @@ MASTER_CSV = ROOT / "out" / "master_targets.csv"
 
 DEFAULT_LIMIT = 5
 DEFAULT_DELAY = (10.0, 20.0)
+DEFAULT_NO_WEB_DELAY = (1.0, 2.0)
 DDG_FAILURE_LIMIT = 5
 SEARCH_RESULTS = 3
 SEARCH_DELAY = 1.0
+WEB_MODES = ("all", "pivots", "none")
 #: Keyword anchors, not operators: this DDG backend ignores both quotes and
 #: ``site:`` (measured 2026-11-15 - quoted and site-scoped queries returned 0
 #: results or unrelated filler), while "<address> etherscan" surfaced the real
@@ -75,6 +77,23 @@ class EnsRecord:
 class SearchHit:
     title: str
     url: str
+
+
+def should_search_address(web: str, record: EnsRecord | None) -> bool:
+    """Whether to run the address pivot for one wallet.
+
+    ``pivots`` keeps DuckDuckGo for wallets with an ENS name and skips the
+    address-only queries, which mostly return explorer filler for wallets that
+    have no off-chain identity.
+    """
+
+    if web == "all":
+        return True
+    if web == "pivots":
+        return record is not None
+    if web == "none":
+        return False
+    raise ValueError(f"unknown web mode {web!r}; expected one of {', '.join(WEB_MODES)}")
 
 
 def read_targets(path: Path = MASTER_CSV, limit: int | None = DEFAULT_LIMIT) -> list[Target]:
@@ -242,7 +261,13 @@ def run(
     limit: int | None = DEFAULT_LIMIT,
     master: Path = MASTER_CSV,
     delay: tuple[float, float] | None = DEFAULT_DELAY,
+    web: str = "all",
+    no_web_delay: tuple[float, float] | None = DEFAULT_NO_WEB_DELAY,
 ) -> int:
+    if web not in WEB_MODES:
+        print(f"error: unknown web mode {web!r}; expected {', '.join(WEB_MODES)}")
+        return 2
+
     targets = read_targets(master, limit)
     if not targets:
         print(f"error: no EVM wallets in {master}")
@@ -250,8 +275,15 @@ def run(
 
     print(f"master : {master}")
     print(f"targets: {len(targets)} wallet(s)")
+    print(f"web    : {web}")
     if delay:
-        print(f"spacing: {delay[0]:.0f}-{delay[1]:.0f}s random between wallets")
+        if no_web_delay:
+            print(
+                f"spacing: {delay[0]:.0f}-{delay[1]:.0f}s after web wallets, "
+                f"{no_web_delay[0]:.0f}-{no_web_delay[1]:.0f}s after no-web wallets"
+            )
+        else:
+            print(f"spacing: {delay[0]:.0f}-{delay[1]:.0f}s random between wallets")
 
     try:
         web3, endpoint = connect_rpc()
@@ -306,17 +338,21 @@ def run(
                             print(f"                 {label}: {value}")
 
             hits: list[SearchHit] = []
-            try:
-                hits = search_address(target.address)
-            except Exception as error:  # noqa: BLE001 - same rule as ENS
-                failures.append(f"search {type(error).__name__}: {str(error)[:90]}")
-                print(f"      DDG      : ERROR ({type(error).__name__}: {str(error)[:90]})")
+            search_enabled = should_search_address(web, record)
+            if not search_enabled:
+                print("      DDG      : skipped (no ENS pivot)")
             else:
-                total_hits += len(hits)
-                print(f"      DDG      : {len(hits)} corroborated result(s)")
-                for hit in hits:
-                    print(f"        * {hit.title}")
-                    print(f"          {hit.url}")
+                try:
+                    hits = search_address(target.address)
+                except Exception as error:  # noqa: BLE001 - same rule as ENS
+                    failures.append(f"search {type(error).__name__}: {str(error)[:90]}")
+                    print(f"      DDG      : ERROR ({type(error).__name__}: {str(error)[:90]})")
+                else:
+                    total_hits += len(hits)
+                    print(f"      DDG      : {len(hits)} corroborated result(s)")
+                    for hit in hits:
+                        print(f"        * {hit.title}")
+                        print(f"          {hit.url}")
 
             if record and record.url:
                 store_findings(db, target.address, "ENS", [("ENS url record", record.url)], "VERIFIED")
@@ -332,8 +368,13 @@ def run(
             store_wallet(db, target.address, record, complete=not failures)
             db.commit()
 
-            search_failed = any(f.startswith("search ") for f in failures)
-            search_failures_in_a_row = search_failures_in_a_row + 1 if search_failed else 0
+            search_failed = search_enabled and any(
+                failure.startswith("search ") for failure in failures
+            )
+            if search_enabled:
+                search_failures_in_a_row = (
+                    search_failures_in_a_row + 1 if search_failed else 0
+                )
 
             if failures:
                 errors += 1
@@ -349,8 +390,9 @@ def run(
                 )
                 break
 
-            if delay and index < len(targets):
-                time.sleep(random.uniform(*delay))
+            sleep_delay = delay if search_enabled else no_web_delay
+            if sleep_delay and index < len(targets):
+                time.sleep(random.uniform(*sleep_delay))
     finally:
         db.close()
 
@@ -372,8 +414,14 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_LIMIT,
         help=f"how many wallets to process (default {DEFAULT_LIMIT})",
     )
+    parser.add_argument(
+        "--web",
+        choices=WEB_MODES,
+        default="all",
+        help="DuckDuckGo mode: all wallets, only ENS-named pivots, or none",
+    )
     args = parser.parse_args(argv)
-    return run(limit=args.limit)
+    return run(limit=args.limit, web=args.web)
 
 
 if __name__ == "__main__":

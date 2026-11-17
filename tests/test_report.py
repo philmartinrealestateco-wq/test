@@ -162,7 +162,7 @@ def test_token_columns_are_populated(tmp_path) -> None:
     assert float(row["Token Holdings (USD)"]) == 250.0
     assert float(row["Total USD"]) == 936.12
     assert row["Token Count"] == 1
-    assert "BEP-20 holdings: USDT 250" in row["Notes"]
+    assert "Token holdings: USDT 250" in row["Notes"]
     assert "unlisted tokens are not detected" in row["Notes"]
 
 

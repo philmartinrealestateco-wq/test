@@ -32,7 +32,7 @@ def main() -> int:
         connection.close()
 
     print("== phase 2: on-chain enrichment ==")
-    scrape_status = onchain_scraper.run(limit=None)
+    scrape_status = onchain_scraper.run(limit=None, web="pivots")
     print()
 
     print("== phase 2b: sanctions screening ==")

@@ -14,6 +14,7 @@ class Network(str, Enum):
     ETHEREUM = "ethereum"
     BSC = "bsc"
     SOLANA = "solana"
+    XRP = "xrp"
 
     @property
     def label(self) -> str:
@@ -22,6 +23,7 @@ class Network(str, Enum):
             Network.ETHEREUM: "Ethereum",
             Network.BSC: "BNB Smart Chain",
             Network.SOLANA: "Solana",
+            Network.XRP: "XRP",
         }[self]
 
     @property
@@ -31,6 +33,7 @@ class Network(str, Enum):
             Network.ETHEREUM: "ETH",
             Network.BSC: "BNB",
             Network.SOLANA: "SOL",
+            Network.XRP: "XRP",
         }[self]
 
     @property
@@ -40,6 +43,7 @@ class Network(str, Enum):
             Network.ETHEREUM: 18,
             Network.BSC: 18,
             Network.SOLANA: 9,
+            Network.XRP: 6,
         }[self]
 
     @property
@@ -53,6 +57,8 @@ class Network(str, Enum):
             return f"https://etherscan.io/address/{address}"
         if self is Network.BSC:
             return f"https://bscscan.com/address/{address}"
+        if self is Network.XRP:
+            return f"https://xrpscan.com/account/{address}"
         return f"https://solscan.io/account/{address}"
 
     @classmethod
@@ -68,6 +74,9 @@ class Network(str, Enum):
             "binance": cls.BSC,
             "solana": cls.SOLANA,
             "sol": cls.SOLANA,
+            "xrp": cls.XRP,
+            "ripple": cls.XRP,
+            "xrpl": cls.XRP,
         }
         if token not in aliases:
             raise ValueError(

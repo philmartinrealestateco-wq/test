@@ -37,12 +37,16 @@ class WalletAnalyzer:
         *,
         max_workers: int = 4,
         bep20: Bep20Provider | None = None,
+        erc20: Bep20Provider | None = None,
     ) -> None:
         self._providers = providers
         self._prices = price_service
         self._settings = settings
         self._max_workers = max_workers
-        self._bep20 = bep20
+        self._token_providers = {
+            Network.BSC: bep20,
+            Network.ETHEREUM: erc20,
+        }
 
     def analyze(
         self,
@@ -180,10 +184,17 @@ class WalletAnalyzer:
         elif price is None:
             record.notes.append(f"no USD price available for {record.native_symbol}")
 
-        if self._bep20 is not None and entry.network is Network.BSC:
-            self._attach_tokens(record, entry.address)
-        elif entry.network is Network.BSC:
-            record.notes.append("BEP-20 token balances were not checked (token scanning disabled)")
+        if self._token_providers.get(entry.network) is not None:
+            self._attach_tokens(
+                record,
+                entry.address,
+                self._token_providers[entry.network],
+            )
+        elif entry.network in (Network.BSC, Network.ETHEREUM):
+            label = "BEP-20" if entry.network is Network.BSC else "ERC-20"
+            record.notes.append(
+                f"{label} token balances were not checked (token scanning disabled)"
+            )
 
         record.last_tx_at = outcome.last_tx_at
         if outcome.last_tx_at is not None:
@@ -204,15 +215,20 @@ class WalletAnalyzer:
         record.verification_status = record.classify()
         return record
 
-    def _attach_tokens(self, record: WalletRecord, address: str) -> None:
-        """Check the configured BEP-20 allowlist; valuation happens once, later."""
+    def _attach_tokens(
+        self,
+        record: WalletRecord,
+        address: str,
+        provider: Bep20Provider,
+    ) -> None:
+        """Check the configured token allowlist; valuation happens once, later."""
 
         record.tokens_checked = True
         try:
-            scan = self._bep20.scan(address) if self._bep20 else None
+            scan = provider.scan(address)
         except ProviderError as exc:
             record.token_scan_complete = False
-            record.notes.append(f"BEP-20 lookup failed: {exc}")
+            record.notes.append(f"token lookup failed: {exc}")
             return
         if scan is None:  # pragma: no cover - guarded by the caller
             return
@@ -230,24 +246,47 @@ class WalletAnalyzer:
             record.notes.append(scan.note)
 
     def _price_tokens(self, records: list[WalletRecord]) -> None:
-        """Price only the contracts actually held, then total each wallet."""
+        """Price each network's held contracts, then total each wallet."""
 
         checked = [record for record in records if record.tokens_checked]
         if not checked:
             return
 
-        contracts = sorted(
-            {holding.contract.lower() for record in checked for holding in record.token_holdings}
-        )
-        prices: dict[str, Decimal] = {}
-        if contracts:
-            try:
-                prices = self._prices.get_token_prices(contracts).prices
-            except Exception as exc:  # noqa: BLE001 - pricing must never end the run
-                LOG.warning("BEP-20 valuation failed; continuing without token values: %s", exc)
-                prices = {}
+        platforms = {
+            Network.BSC: "binance-smart-chain",
+            Network.ETHEREUM: "ethereum",
+        }
+        for network, platform in platforms.items():
+            group = [record for record in checked if record.network is network]
+            if not group:
+                continue
 
-        for record in checked:
+            contracts = sorted(
+                {holding.contract.lower() for record in group for holding in record.token_holdings}
+            )
+            prices: dict[str, Decimal] = {}
+            if contracts:
+                try:
+                    prices = self._prices.get_token_prices(
+                        contracts,
+                        platform=platform,
+                    ).prices
+                except Exception as exc:  # noqa: BLE001 - pricing must never end the run
+                    LOG.warning(
+                        "token valuation failed for %s; continuing without token values: %s",
+                        network.label,
+                        exc,
+                    )
+                    prices = {}
+
+            self._apply_token_prices(group, prices)
+
+    @staticmethod
+    def _apply_token_prices(
+        records: list[WalletRecord],
+        prices: dict[str, Decimal],
+    ) -> None:
+        for record in records:
             unpriced = 0
             for holding in record.token_holdings:
                 price = prices.get(holding.contract.lower())

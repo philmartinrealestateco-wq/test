@@ -43,6 +43,14 @@ DEFAULT_BEP20_TOKENS: tuple[TokenSpec, ...] = (
     TokenSpec("0x1D2F0da169ceB9fC7B3144628dB156f3F6c60dBE", "XRP"),
 )
 
+#: Mainnet Ethereum contracts. These are the same stablecoins ``run_pipeline``
+#: uses as discovery seeds, now valued on the chain that holds them.
+DEFAULT_ERC20_TOKENS: tuple[TokenSpec, ...] = (
+    TokenSpec("0xdAC17F958D2ee523a2206206994597C13D831ec7", "USDT", 6),
+    TokenSpec("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", "USDC", 6),
+    TokenSpec("0x6B175474E89094C44Da98b954EedeAC495271d0F", "DAI", 18),
+)
+
 
 class TokenListError(RuntimeError):
     """A token file could not be read or contains no usable contracts."""

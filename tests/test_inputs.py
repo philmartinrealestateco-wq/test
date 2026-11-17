@@ -39,6 +39,22 @@ def test_csv_without_network_expands_evm(tmp_path: Path) -> None:
     assert [entry.network for entry in parsed.entries] == [Network.ETHEREUM, Network.BSC]
 
 
+def test_holder_export_header_is_accepted(tmp_path: Path) -> None:
+    path = write(
+        tmp_path,
+        "holders.csv",
+        "HolderAddress,Balance,PendingBalanceUpdate\n"
+        f"{VITALIK},12345,0\n",
+    )
+    parsed = load_file(path)
+
+    assert [entry.network for entry in parsed.entries] == [
+        Network.ETHEREUM,
+        Network.BSC,
+    ]
+    assert parsed.entries[0].address == VITALIK
+
+
 def test_csv_unknown_network_warns_and_skips(tmp_path: Path) -> None:
     path = write(tmp_path, "c.csv", f"address,chain\n{VITALIK},dogecoin\n")
     parsed = load_file(path)

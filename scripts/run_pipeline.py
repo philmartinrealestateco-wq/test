@@ -33,9 +33,11 @@ MASTER = OUT / "master_targets.csv"
 HTML = OUT / "targets_report.html"
 RUN_CMD = ROOT / "run.cmd"
 BTC_SOL_CSV = ROOT / "data" / "btc_sol_holders.csv"
+XRP_CSV = OUT / "xrp_holders.csv"
 
 BATCH_SCANNER = SCRIPTS / "batch_scan_tokens.py"
 BTC_SOL_FETCHER = SCRIPTS / "fetch_btc_sol_holders.py"
+XRP_FETCHER = SCRIPTS / "fetch_xrp_holders.py"
 REPORT_GENERATOR = SCRIPTS / "generate_report.py"
 
 TOKENS = (
@@ -45,7 +47,7 @@ TOKENS = (
 )
 REPORT_COLUMNS = ("Wallet", "Network", "Native USD", "Token USD", "Total USD", "Status")
 #: Snapshot name per chain label, so the aggregator picks these up as populations.
-CHAIN_SNAPSHOTS = {"Bitcoin": "BTC", "Solana": "SOL"}
+CHAIN_SNAPSHOTS = {"Bitcoin": "BTC", "Solana": "SOL", "XRP": "XRP"}
 
 VENV_PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
 PYTHON = VENV_PYTHON if VENV_PYTHON.exists() else Path(sys.executable)
@@ -74,11 +76,14 @@ def run_step(label: str, command: list[str], log_path: Path) -> None:
     print(f"     done in {elapsed:.0f}s ({log_path.name})")
 
 
-def snapshot_chain_rows(rows: list[dict[str, str]]) -> int:
+def snapshot_chain_rows(rows: list[dict[str, str]], networks: set[str] | None = None) -> int:
     """Split the freshly appended match rows into one snapshot per chain."""
 
+    selected_networks = set(CHAIN_SNAPSHOTS) if networks is None else set(networks)
     written = 0
     for network, symbol in CHAIN_SNAPSHOTS.items():
+        if network not in selected_networks:
+            continue
         selected = [row for row in rows if row.get("Network") == network]
         path = BATCH / f"{symbol}_matches.csv"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -95,7 +100,10 @@ def snapshot_chain_rows(rows: list[dict[str, str]]) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--limit", type=int, default=1000, help="EVM holders per token (default 1000)"
+        "--limit",
+        type=int,
+        default=1000,
+        help="EVM holders per token and XRP top accounts (default 1000)",
     )
     parser.add_argument(
         "--min-usd", type=Decimal, default=Decimal("50000"), help="lower bound"
@@ -119,6 +127,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--skip-btc-sol", action="store_true", help="leave Bitcoin/Solana untouched"
     )
+    parser.add_argument(
+        "--skip-xrp", action="store_true", help="leave XRP untouched"
+    )
     return parser
 
 
@@ -134,7 +145,7 @@ def main() -> int:
     started = time.monotonic()
     bounds = ["--min-usd", str(args.min_usd), "--max-usd", str(args.max_usd)]
 
-    print("[1/4] EVM token holders")
+    print("[1/5] EVM token holders")
     if args.reuse_evm:
         snapshots = sorted(BATCH.glob("*_matches.csv"))
         print(f"  reused {len(snapshots)} existing snapshot(s) under {BATCH}")
@@ -156,7 +167,7 @@ def main() -> int:
             BATCH / "pipeline_evm.log",
         )
 
-    print("[2/4] Bitcoin and Solana holders")
+    print("[2/5] Bitcoin and Solana holders")
     if args.skip_btc_sol:
         print("  skipped (--skip-btc-sol)")
     else:
@@ -187,16 +198,57 @@ def main() -> int:
                 BATCH / "pipeline_btc_sol_scan.log",
             )
             appended = read_rows(REPORT_MATCHES)[before:]
-            snapshot_chain_rows(appended)
+            snapshot_chain_rows(appended, {"Bitcoin", "Solana"})
 
-    print("[3/4] aggregate master_targets.csv")
+    print("[3/5] XRP holders")
+    if args.skip_xrp:
+        print("  skipped (--skip-xrp)")
+    else:
+        run_step(
+            "build the XRP rich list",
+            [
+                str(PYTHON),
+                str(XRP_FETCHER),
+                "--limit",
+                str(args.limit),
+                "--out",
+                str(XRP_CSV),
+                *bounds,
+            ],
+            BATCH / "pipeline_xrp_fetch.log",
+        )
+        holders = read_rows(XRP_CSV)
+        if not holders:
+            print("  warning: no XRP addresses were kept; nothing to screen")
+        else:
+            before = len(read_rows(REPORT_MATCHES))
+            run_step(
+                f"screen {len(holders)} XRP address(es)",
+                [
+                    "cmd",
+                    "/c",
+                    "call",
+                    str(RUN_CMD),
+                    "analyze",
+                    "--file",
+                    str(XRP_CSV),
+                    "--filter",
+                    "--quiet",
+                    *bounds,
+                ],
+                BATCH / "pipeline_xrp_scan.log",
+            )
+            appended = read_rows(REPORT_MATCHES)[before:]
+            snapshot_chain_rows(appended, {"XRP"})
+
+    print("[4/5] aggregate master_targets.csv")
     run_step(
         "merge every population snapshot",
         [str(PYTHON), str(BATCH_SCANNER), "--aggregate-only", *bounds],
         BATCH / "pipeline_aggregate.log",
     )
 
-    print("[4/4] render the HTML report")
+    print("[5/5] render the HTML report")
     run_step(
         "generate targets_report.html",
         [str(PYTHON), str(REPORT_GENERATOR), *bounds],
