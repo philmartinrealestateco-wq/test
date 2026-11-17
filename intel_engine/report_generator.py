@@ -19,6 +19,7 @@ import markdown
 from xhtml2pdf import pisa
 
 from adapters import canonical_url
+from adapters.breach_adapter import decode_finding, mask_email
 from adapters.flowlens_adapter import group_amount, plain_decimal
 from database import DB_PATH, init_db
 
@@ -76,6 +77,63 @@ def load_findings(db, address: str, tool: str) -> list:
         """,
         (address.lower(), tool),
     ).fetchall()
+
+
+def _newest_run(rows: list) -> list[tuple]:
+    """Rows from the newest ``run_id``, in insertion order.
+
+    A rerun appends instead of replacing, so reading every breach row would mix
+    yesterday's failed lookup with today's result.
+    """
+    groups: dict[str, list[tuple]] = {}
+    order: list[str] = []
+
+    for row in rows:
+        payload = decode_finding(row["finding"])
+        if payload is None:
+            continue
+        run_id = str(payload.get("run_id") or "")
+        if run_id not in groups:
+            groups[run_id] = []
+            order.append(run_id)
+        groups[run_id].append((row, payload))
+
+    return groups[order[-1]] if order else []
+
+
+def load_breach_run(db, address: str) -> list[tuple]:
+    """The newest breach lookup for this wallet, as (row, payload) pairs."""
+    rows = db.execute(
+        """
+        SELECT finding, url, confidence, timestamp
+        FROM osint_findings
+        WHERE lower(address) = lower(?) AND tool = 'BreachAPI'
+          AND category = 'breach_exposure'
+        ORDER BY rowid
+        """,
+        (address.lower(),),
+    ).fetchall()
+    return _newest_run(rows)
+
+
+def load_ownership(db, address: str) -> dict | None:
+    """The newest ownership proof recorded for this wallet."""
+    rows = db.execute(
+        """
+        SELECT finding, confidence, timestamp
+        FROM osint_findings
+        WHERE lower(address) = lower(?) AND tool = 'SelfAudit'
+          AND category = 'ownership_verification'
+        ORDER BY rowid
+        """,
+        (address.lower(),),
+    ).fetchall()
+
+    for row in reversed(rows):
+        payload = decode_finding(row["finding"])
+        if payload is not None:
+            return payload
+    return None
 
 
 def load_social_footprint(db, address: str) -> list:
@@ -250,10 +308,22 @@ def build_markdown(db, address: str) -> str:
     sanction_runs = load_sanctions_runs(db)
     name_runs = load_name_screenings(db)
     flow = load_flow_evidence(db, address)
+    ownership = load_ownership(db, address)
+    breach_run = load_breach_run(db, address)
 
     ens_url = next((row["url"] for row in ens_records if row["url"]), None)
     holehe_blocked = any(row["confidence"] == "ERROR" for row in holehe)
     subject = wallet["ens_name"] or wallet["address"]
+
+    if ownership is None:
+        ownership_label = "not recorded"
+    elif ownership.get("method") == "bypass":
+        ownership_label = "BYPASSED (test mode)"
+    else:
+        ownership_label = "signed challenge verified"
+    breach_hits = sum(
+        1 for _, payload in breach_run if payload.get("status") == "hit"
+    )
 
     lines: list[str] = [
         "# OSINT Target Report",
@@ -262,7 +332,7 @@ def build_markdown(db, address: str) -> str:
         f'({subject}). Every value below comes from <code>intel.db</code>; nothing was '
         "re-verified for this document.</p>",
         "",
-        f'<p class="meta">Generated {utc_now()} &middot; sources: ENS, DuckDuckGo, sherlock, maigret, holehe, OpenSanctions, FlowLens</p>',
+        f'<p class="meta">Generated {utc_now()} &middot; sources: ENS, DuckDuckGo, sherlock, maigret, holehe, OpenSanctions, FlowLens, HIBP breach lookup, EIP-191 self-audit</p>',
         "",
         "## Target Overview",
         "",
@@ -279,6 +349,8 @@ def build_markdown(db, address: str) -> str:
         f"| Social profiles stored | {len(social)} |",
         f"| Traced transfers | {len(flow)} |",
         f"| Holehe rows stored | {len(holehe)} |",
+        f"| Ownership proof | {ownership_label} |",
+        f"| Breach records (latest run) | {breach_hits} |",
         "",
     ]
 
@@ -331,6 +403,93 @@ def build_markdown(db, address: str) -> str:
         "(https://www.opensanctions.org/licensing/).</p>",
         "",
     ]
+
+    lines += ["## Breach Exposure & Ownership Verification", ""]
+
+    if ownership is None:
+        lines += [
+            '<p class="lede"><strong>Ownership not established.</strong> No signed challenge is '
+            "recorded for this wallet.</p>",
+            "",
+        ]
+    elif ownership.get("method") == "bypass":
+        lines += [
+            '<p class="alert"><strong>Ownership NOT verified.</strong> This run used '
+            "<code>--bypass-signature</code>, so no wallet signature was checked. Treat every "
+            "breach result below as email-level information only; this report is not proof of "
+            "control.</p>",
+            "",
+        ]
+    else:
+        lines += [
+            '<p class="lede"><strong>Ownership verified.</strong> The wallet signed a one-time '
+            "EIP-191 challenge; the signature recovered "
+            f'<code>{cell(ownership.get("recovered"))}</code>, matching the audited address '
+            f'(recorded {cell(ownership.get("verified_at"))}).</p>',
+            "",
+        ]
+
+    lines += [
+        '<p class="lede"><strong>Breach exposure is not proof of wallet ownership.</strong> '
+        "A hit only shows that an email address appeared in a third-party data set. Anyone can "
+        "publish an email in an ENS record, and a breach never reveals who controls a wallet.</p>",
+        "",
+    ]
+
+    if not breach_run:
+        lines += ["_No breach lookup has been recorded for this address._", ""]
+    else:
+        first_row, first_payload = breach_run[0]
+        provider = str(first_payload.get("provider") or "unknown")
+        audited = mask_email(first_payload.get("email"))
+        status = first_payload.get("status")
+
+        if status == "error":
+            detail = first_payload.get("detail") or "the provider returned no detail"
+            lines += [
+                f'<p class="alert"><strong>Breach lookup failed.</strong> {cell(detail)} '
+                f"Exposure for {cell(audited)} is <strong>unknown, not absent</strong>.</p>",
+                "",
+            ]
+        elif status == "clean":
+            lines += [
+                f'<p class="lede">{cell(provider)} returned no breach for {cell(audited)} on '
+                f"{cell(first_row['timestamp'])}. Absence from one provider is not proof that "
+                "the address was never breached.</p>",
+                "",
+            ]
+        else:
+            hits = [
+                (row, payload)
+                for row, payload in breach_run
+                if payload.get("status") == "hit"
+            ]
+            lines += [
+                f'<p class="meta">{cell(provider)} &middot; email audited {cell(audited)} '
+                f"&middot; checked {cell(first_row['timestamp'])} &middot; "
+                f"{len(hits)} breach(es)</p>",
+                "",
+                "| Breach | Breached | Records | Data classes | Confidence |",
+                "| --- | --- | --- | --- | --- |",
+            ]
+            for row, payload in hits:
+                name = str(payload.get("name") or payload.get("title") or "unknown")
+                label = f"[{cell(name)}]({row['url']})" if row["url"] else cell(name)
+                records = payload.get("records")
+                count = f"{records:,}" if isinstance(records, int) else "&mdash;"
+                classes = ", ".join(
+                    str(entry) for entry in (payload.get("classes") or [])
+                ) or "&mdash;"
+                lines.append(
+                    f"| {label} | {cell(payload.get('date'))} | {count} | "
+                    f"{cell(classes)} | {cell(row['confidence'])} |"
+                )
+            lines += [
+                "",
+                f'<p class="lede">Source: {cell(provider)}. A breach hit is an email exposure, '
+                "not attribution.</p>",
+                "",
+            ]
 
     lines += ["## Web Mentions", ""]
     if web:
@@ -480,6 +639,27 @@ def build_markdown(db, address: str) -> str:
             "On-chain history (funding source, counterparties) was not reviewed here and is the "
             "next step for attribution."
         )
+    if ownership and ownership.get("method") == "bypass":
+        questions.append(
+            "Ownership was not proven: this report was generated with `--bypass-signature` and "
+            "must not be used as evidence of control."
+        )
+    elif ownership is None:
+        questions.append(
+            "No ownership proof is stored, so the audited email and this wallet are only "
+            "co-listed, not linked."
+        )
+    if breach_run:
+        newest_status = breach_run[0][1].get("status")
+        if newest_status == "hit":
+            questions.append(
+                "A breach hit belongs to the audited email, not the wallet: matching that email "
+                "to the address still needs independent evidence."
+            )
+        elif newest_status == "error":
+            questions.append(
+                "The breach lookup failed, so email exposure is unknown rather than absent."
+            )
 
     lines += [f"- {question}" for question in questions]
     lines.append("")
